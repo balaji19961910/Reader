@@ -689,7 +689,21 @@ function contentCSS(s: Settings): string {
       ${fontRule}
       line-height: ${s.lineHeight};
     }
-    p, li, blockquote, dd { line-height: ${s.lineHeight}; }
+    p, li, blockquote, dd {
+      line-height: ${s.lineHeight};
+      text-align: ${s.textAlign};
+      -webkit-hyphens: ${s.hyphenate ? "auto" : "manual"};
+      hyphens: ${s.hyphenate ? "auto" : "manual"};
+      -webkit-hyphenate-limit-before: 3;
+      -webkit-hyphenate-limit-after: 2;
+      /* a word longer than the column still breaks instead of overflowing */
+      overflow-wrap: break-word;
+    }
+    /* don't override an explicit alignment baked into the book */
+    [align="left"] { text-align: left; }
+    [align="right"] { text-align: right; }
+    [align="center"] { text-align: center; }
+    [align="justify"] { text-align: justify; }
     a:link, a:visited { color: ${ACCENT}; }
     img { max-width: 100%; height: auto; }
     ::highlight(tts) { background: #ffe08a; color: #111; }
@@ -1063,6 +1077,10 @@ function syncSettingsUI() {
   $("#fontsize-val").textContent = settings.fontSize + "%";
   $<HTMLInputElement>("#lineheight").value = String(settings.lineHeight);
   $("#lineheight-val").textContent = String(settings.lineHeight);
+  document
+    .querySelectorAll<HTMLElement>("#align-row .chip")
+    .forEach((c) => c.classList.toggle("on", c.dataset.align === settings.textAlign));
+  $<HTMLInputElement>("#t-hyphenate").checked = settings.hyphenate;
   const mset = (id: string, val: number) => {
     $<HTMLInputElement>("#" + id).value = String(val);
     $("#" + id + "-val").textContent = val + "px";
@@ -1180,6 +1198,22 @@ function wireUi() {
 
   $<HTMLInputElement>("#lineheight").addEventListener("input", (e) => {
     settings.lineHeight = Number((e.target as HTMLInputElement).value);
+    commit();
+    applyReaderStyles();
+  });
+
+  // text alignment
+  document.querySelectorAll<HTMLElement>("#align-row .chip").forEach((c) =>
+    c.addEventListener("click", () => {
+      settings.textAlign = c.dataset.align as Settings["textAlign"];
+      commit();
+      applyReaderStyles();
+    }),
+  );
+
+  // hyphenation
+  $<HTMLInputElement>("#t-hyphenate").addEventListener("change", (e) => {
+    settings.hyphenate = (e.target as HTMLInputElement).checked;
     commit();
     applyReaderStyles();
   });

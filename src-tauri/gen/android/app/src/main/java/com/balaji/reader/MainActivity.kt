@@ -18,19 +18,25 @@ import org.json.JSONObject
 import java.io.File
 
 class MainActivity : TauriActivity() {
-  // Persisted so the choice survives the JS-interface injection timing.
   @Volatile private var volumePaging = true
   @Volatile private var pipEnabled = false
   @Volatile private var pendingFile: String? = null
+  private var webView: WebView? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     volumePaging = getSharedPreferences("reader", Context.MODE_PRIVATE)
       .getBoolean("volumePaging", true)
-    // expose window.ReaderNative.* to the web layer
-    findWebView(window.decorView)?.addJavascriptInterface(Bridge(), "ReaderNative")
     handleIntent(intent)
+  }
+
+  // Called when the WebView is created — register the JS bridge BEFORE the page
+  // loads so window.ReaderNative is reliably available (fixes the toggle never
+  // reaching native, which left volume keys dead when paging was off).
+  override fun onWebViewCreate(webView: WebView) {
+    this.webView = webView
+    webView.addJavascriptInterface(Bridge(), "ReaderNative")
   }
 
   override fun onNewIntent(intent: Intent) {
@@ -94,7 +100,7 @@ class MainActivity : TauriActivity() {
       val path = cacheFile.absolutePath
       pendingFile = path
       // also push it to the running page (listener attached on boot)
-      val wv = findWebView(window.decorView)
+      val wv = webView ?: findWebView(window.decorView)
       wv?.postDelayed({
         wv.evaluateJavascript(
           "window.dispatchEvent(new CustomEvent('open-file-android',{detail:${JSONObject.quote(path)}}))",
@@ -132,7 +138,7 @@ class MainActivity : TauriActivity() {
         else -> null
       }
       if (dir != null) {
-        val wv = findWebView(window.decorView)
+        val wv = webView ?: findWebView(window.decorView)
         wv?.post {
           wv.evaluateJavascript(
             "window.dispatchEvent(new CustomEvent('reader-volume',{detail:'$dir'}))",

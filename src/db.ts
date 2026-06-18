@@ -74,6 +74,8 @@ export interface Settings {
   font: string;
   fontSize: number; // percent
   lineHeight: number;
+  textAlign: "left" | "center" | "right" | "justify";
+  hyphenate: boolean; // break words with a hyphen at line ends
   marginTop: number; // px
   marginRight: number; // px
   marginBottom: number; // px
@@ -106,6 +108,8 @@ const DEFAULT_SETTINGS: Settings = {
   font: "",
   fontSize: 100,
   lineHeight: 1.5,
+  textAlign: "justify",
+  hyphenate: true,
   marginTop: 24,
   marginRight: 24,
   marginBottom: 24,

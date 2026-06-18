@@ -1,0 +1,90 @@
+- generic [active] [ref=e1]:
+  - main [ref=e7]:
+    - button "Previous" [ref=e8] [cursor=pointer]
+    - button "Next" [ref=e11] [cursor=pointer]
+  - generic [ref=e14]:
+    - generic [ref=e15]:
+      - heading "Library" [level=2] [ref=e16]
+      - generic [ref=e17] [cursor=pointer]: + Open book
+    - generic [ref=e95] [cursor=pointer]:
+      - generic [ref=e97]: Scroll Test Book
+      - generic [ref=e98]:
+        - generic [ref=e99]: Scroll Test Book
+        - generic [ref=e100]: Test Author
+      - button "🗑" [ref=e103]
+  - generic [ref=e28]:
+    - generic [ref=e29]:
+      - heading "Chapters" [level=2] [ref=e30]
+      - button "✕" [ref=e31] [cursor=pointer]
+    - generic [ref=e32]:
+      - button "Chapter 1" [ref=e104] [cursor=pointer]
+      - button "Chapter 2" [ref=e105] [cursor=pointer]
+  - generic [ref=e34]:
+    - generic [ref=e35]:
+      - heading "Display" [level=2] [ref=e36]
+      - button "✕" [ref=e37] [cursor=pointer]
+    - generic [ref=e38]:
+      - generic [ref=e39]: Theme
+      - generic [ref=e40]:
+        - button "Light" [ref=e41] [cursor=pointer]
+        - button "Sepia" [ref=e42] [cursor=pointer]
+        - button "Dark" [ref=e43] [cursor=pointer]
+        - button "Black" [ref=e44] [cursor=pointer]
+    - generic [ref=e45]:
+      - generic [ref=e46]: Layout
+      - generic [ref=e47]:
+        - button "Scroll" [ref=e48] [cursor=pointer]
+        - button "Page" [ref=e49] [cursor=pointer]
+    - generic [ref=e50]:
+      - generic [ref=e51]: Font
+      - combobox [ref=e52]:
+        - option "Publisher default" [selected]
+        - option "Georgia"
+        - option "Palatino"
+        - option "Sans-serif"
+        - option "Atkinson (readable)"
+    - generic [ref=e53]:
+      - generic [ref=e54]:
+        - text: Font size
+        - generic [ref=e55]: 100%
+      - slider [ref=e56]: "100"
+    - generic [ref=e57]:
+      - generic [ref=e58]:
+        - text: Line spacing
+        - generic [ref=e59]: "1.5"
+      - slider [ref=e60]: "1.5"
+    - generic [ref=e61]:
+      - generic [ref=e62]:
+        - text: Vertical margin (top/bottom)
+        - generic [ref=e63]: 24px
+      - slider [ref=e64]: "24"
+    - generic [ref=e65]:
+      - generic [ref=e66]:
+        - text: Horizontal margin (left/right)
+        - generic [ref=e67]: 24px
+      - slider [ref=e68]: "24"
+    - separator [ref=e69]
+    - heading "Reading view" [level=3] [ref=e70]
+    - generic [ref=e71]:
+      - generic [ref=e72]: Auto-hide bars (immersive)
+      - checkbox "Auto-hide bars (immersive)" [checked] [ref=e73] [cursor=pointer]
+    - generic [ref=e74]:
+      - generic [ref=e75]: Always show header
+      - checkbox "Always show header" [ref=e76] [cursor=pointer]
+    - separator [ref=e77]
+    - heading "Auto-dim when idle" [level=3] [ref=e78]
+    - generic [ref=e79]:
+      - generic [ref=e80]: Enable auto-dim
+      - checkbox "Enable auto-dim" [ref=e81] [cursor=pointer]
+    - generic [ref=e82]:
+      - generic [ref=e83]:
+        - text: Dim after
+        - generic [ref=e84]: 30s
+      - slider [ref=e85]: "30"
+    - generic [ref=e86]:
+      - generic [ref=e87]:
+        - text: Dim amount
+        - generic [ref=e88]: 40%
+      - slider [ref=e89]: "40"
+    - separator [ref=e90]
+    - heading "Reading aids" [level=3] [ref=e91]

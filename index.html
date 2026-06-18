@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Reader</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body data-theme="light">
+    <!-- Top toolbar -->
+    <header id="toolbar">
+      <button id="btn-toc" class="icon-btn" title="Chapters">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z"/></svg>
+      </button>
+      <span id="book-title">Reader</span>
+      <button id="btn-bookmark" class="icon-btn" title="Bookmark this page">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 11v6.97l-5-2.14-5 2.14V5h7V3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V11h-2zm4-4h-2v2h-2V7h-2V5h2V3h2v2h2v2z"/></svg>
+      </button>
+      <button id="btn-tts" class="icon-btn" title="Read aloud"></button>
+      <button id="btn-tts-stop" class="icon-btn" title="Stop read aloud" style="display:none">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+      </button>
+      <button id="btn-library" class="icon-btn" title="Library">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
+      </button>
+      <button id="btn-float" class="icon-btn" title="Float on top">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 9V4l1 0c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1l1 0v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" title="Display settings">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 4v3h5v12h3V7h5V4H9zm-6 8h3v7h3v-7h3V9H3v3z"/></svg>
+      </button>
+    </header>
+
+    <!-- Reading area -->
+    <main id="reader">
+      <button class="nav-zone left" id="nav-prev" aria-label="Previous"></button>
+      <div id="viewer"></div>
+      <button class="nav-zone right" id="nav-next" aria-label="Next"></button>
+    </main>
+
+    <!-- Progress bar -->
+    <footer id="statusbar">
+      <span id="progress-label">—</span>
+    </footer>
+
+    <!-- Library overlay -->
+    <section id="library" class="overlay open">
+      <div class="overlay-head">
+        <h2>Library</h2>
+        <label class="open-btn">
+          + Open book
+          <input
+            id="file-input"
+            type="file"
+            accept=".epub,.mobi,.azw,.azw3,.fb2,.fbz,.fb2.zip,.cbz,.pdf"
+            multiple
+            hidden
+          />
+        </label>
+      </div>
+      <div id="book-grid" class="book-grid">
+        <p id="empty-hint" class="hint">No books yet. Tap “Open book” to add an EPUB.</p>
+      </div>
+    </section>
+
+    <!-- Table of contents (chapters) -->
+    <section id="toc" class="overlay panel-left">
+      <div class="overlay-head">
+        <h2>Contents</h2>
+        <button id="btn-close-toc" class="icon-btn" title="Close">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <h3 class="group mark-head">Chapters</h3>
+      <div id="toc-list" class="toc-list">
+        <p class="hint">No chapters.</p>
+      </div>
+      <h3 class="group mark-head">Bookmarks</h3>
+      <div id="bookmark-list" class="toc-list">
+        <p class="hint">No bookmarks.</p>
+      </div>
+      <h3 class="group mark-head">Highlights</h3>
+      <div id="highlight-list" class="toc-list">
+        <p class="hint">No highlights.</p>
+      </div>
+    </section>
+
+    <!-- Settings panel -->
+    <section id="settings" class="overlay panel">
+      <div class="overlay-head">
+        <h2>Display</h2>
+        <button id="btn-close-settings" class="icon-btn" title="Close">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+
+      <div class="setting">
+        <label>Theme</label>
+        <div id="theme-row" class="chip-row">
+          <button class="chip" data-theme="light">Light</button>
+          <button class="chip" data-theme="sepia">Sepia</button>
+          <button class="chip" data-theme="dark">Dark</button>
+          <button class="chip" data-theme="black">Black</button>
+        </div>
+      </div>
+
+      <div class="setting">
+        <label>Layout</label>
+        <div id="flow-row" class="chip-row">
+          <button class="chip" data-flow="scrolled">Scroll</button>
+          <button class="chip" data-flow="paginated">Page</button>
+        </div>
+      </div>
+
+      <div class="setting">
+        <label>Font</label>
+        <select id="font-select">
+          <option value="">Publisher default</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="'Iowan Old Style', 'Palatino', serif">Palatino</option>
+          <option value="'Helvetica Neue', Arial, sans-serif">Sans-serif</option>
+          <option value="bundled:literata">Literata</option>
+          <option value="bundled:atkinson">Atkinson Hyperlegible</option>
+          <option value="bundled:opendyslexic">OpenDyslexic</option>
+        </select>
+      </div>
+
+      <div class="setting">
+        <label>Font size <span id="fontsize-val">100%</span></label>
+        <input id="fontsize" type="range" min="70" max="220" step="10" value="100" />
+      </div>
+
+      <div class="setting">
+        <label>Line spacing <span id="lineheight-val">1.5</span></label>
+        <input id="lineheight" type="range" min="1.2" max="2.4" step="0.1" value="1.5" />
+      </div>
+
+      <div class="setting">
+        <label>Top margin <span id="margintop-val">24px</span></label>
+        <input id="margintop" type="range" min="0" max="160" step="4" value="24" />
+      </div>
+      <div class="setting">
+        <label>Bottom margin <span id="marginbottom-val">24px</span></label>
+        <input id="marginbottom" type="range" min="0" max="200" step="4" value="24" />
+      </div>
+      <div class="setting">
+        <label>Left margin <span id="marginleft-val">24px</span></label>
+        <input id="marginleft" type="range" min="0" max="200" step="4" value="24" />
+      </div>
+      <div class="setting">
+        <label>Right margin <span id="marginright-val">24px</span></label>
+        <input id="marginright" type="range" min="0" max="200" step="4" value="24" />
+      </div>
+
+      <hr class="sep" />
+      <h3 class="group">Reading view</h3>
+
+      <div class="setting toggle">
+        <label for="t-immersive">Auto-hide bars while reading</label>
+        <input id="t-immersive" type="checkbox" />
+      </div>
+      <div class="setting toggle indent">
+        <label for="t-alwaysheader">…but keep the header visible</label>
+        <input id="t-alwaysheader" type="checkbox" />
+      </div>
+
+      <div data-platforms="desktop">
+        <hr class="sep" />
+        <h3 class="group">Window</h3>
+
+        <div class="setting toggle">
+          <label for="t-float">Float on top</label>
+          <input id="t-float" type="checkbox" />
+        </div>
+
+        <div class="setting">
+          <label>Opacity when focused <span id="opacity-active-val">100%</span></label>
+          <input id="opacity-active" type="range" min="20" max="100" step="5" value="100" />
+        </div>
+        <div class="setting">
+          <label>Opacity when in background <span id="opacity-inactive-val">80%</span></label>
+          <input id="opacity-inactive" type="range" min="20" max="100" step="5" value="80" />
+        </div>
+      </div>
+
+      <hr class="sep" />
+      <h3 class="group">Screen</h3>
+
+      <div class="setting toggle">
+        <label for="t-keepawake">Keep screen awake while reading</label>
+        <input id="t-keepawake" type="checkbox" />
+      </div>
+
+      <div id="tts-group">
+        <hr class="sep" />
+        <h3 class="group">Read aloud</h3>
+        <div class="setting">
+          <label>Voice</label>
+          <select id="tts-voice"><option value="">Default</option></select>
+        </div>
+        <div class="setting">
+          <label>Speed <span id="tts-rate-val">1.0×</span></label>
+          <input id="tts-rate" type="range" min="0.5" max="2" step="0.1" value="1" />
+        </div>
+      </div>
+
+      <hr class="sep" />
+      <h3 class="group">Reading aids</h3>
+
+      <div class="setting toggle" data-platforms="desktop">
+        <label for="t-mediakeys">◀◀ / ▶▶ media keys turn pages</label>
+        <input id="t-mediakeys" type="checkbox" />
+      </div>
+      <div class="setting toggle" data-platforms="android ios">
+        <label for="t-volume">Volume buttons turn pages</label>
+        <input id="t-volume" type="checkbox" />
+      </div>
+    </section>
+
+    <div id="scrim"></div>
+
+    <!-- Selection popup (highlight / note / copy) -->
+    <div id="sel-popup" class="sel-popup" hidden>
+      <button class="hl-color" data-color="#ffe08a" title="Yellow" style="background:#ffe08a"></button>
+      <button class="hl-color" data-color="#a8e6b8" title="Green" style="background:#a8e6b8"></button>
+      <button class="hl-color" data-color="#a8d4ff" title="Blue" style="background:#a8d4ff"></button>
+      <button class="hl-color" data-color="#ffb3c6" title="Pink" style="background:#ffb3c6"></button>
+      <span class="sel-sep"></span>
+      <button id="sel-note" class="sel-act" title="Add note">Note</button>
+      <button id="sel-copy" class="sel-act" title="Copy">Copy</button>
+    </div>
+  </body>
+</html>

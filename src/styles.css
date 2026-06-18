@@ -38,12 +38,21 @@ body {
   border-bottom: 1px solid var(--chrome-border);
   z-index: 5;
 }
+/* keep chrome clear of the system status bar / gesture bar (notch, cutouts) */
+#toolbar {
+  padding-top: env(safe-area-inset-top, 0px);
+  height: calc(var(--bar-h) + env(safe-area-inset-top, 0px));
+  padding-left: calc(12px + env(safe-area-inset-left, 0px));
+  padding-right: calc(12px + env(safe-area-inset-right, 0px));
+}
 #statusbar {
   border-bottom: none;
   border-top: 1px solid var(--chrome-border);
   justify-content: center;
   font-size: 13px;
   opacity: 0.75;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  height: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px));
 }
 #book-title {
   flex: 1;
@@ -428,6 +437,14 @@ input[type="checkbox"] {
 }
 .mark-del svg { width: 16px; height: 16px; }
 .mark-del:hover { opacity: 1; background: rgba(127, 127, 127, 0.15); }
+
+/* ---- Safe-area insets for overlay panels (notch / status bar) ---- */
+#library,
+#toc.panel-left,
+#settings.panel {
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
 
 /* ---- Small-window resilience ---- */
 @media (max-height: 420px) {

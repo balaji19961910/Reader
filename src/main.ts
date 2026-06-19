@@ -10,8 +10,10 @@ import {
   deleteAudio,
   deleteBook,
   getAudioBlob,
+  getAudioMap,
   getAudioTracks,
   getBook,
+  setAudioMap,
   getLastOpened,
   listBooks,
   loadAudioPos,
@@ -785,7 +787,26 @@ function hidePlayer() {
 
 const audioEl = $<HTMLAudioElement>("#audio-el");
 let audioNames: string[] = [];
+let audioMap: number[] = []; // track index → chapter index
 let audioTrack = 0;
+
+// distribute N tracks across C chapters in order (used when no map is saved)
+function defaultAudioMap(nTracks: number, nChapters: number): number[] {
+  return Array.from({ length: nTracks }, (_, i) =>
+    nChapters > 0 ? Math.min(nChapters - 1, Math.floor((i * nChapters) / nTracks)) : 0,
+  );
+}
+
+// load the saved map for the open book, defaulting if absent/stale
+async function loadAudioMap() {
+  if (!currentId) {
+    audioMap = [];
+    return;
+  }
+  const saved = await getAudioMap(currentId);
+  if (saved.length === audioNames.length) audioMap = saved;
+  else audioMap = defaultAudioMap(audioNames.length, tocTop().length);
+}
 let audioActive = false;
 let audioUrl: string | null = null;
 let audioSaveTimer: number | undefined;
@@ -797,11 +818,12 @@ function tocTop(): any[] {
   return view?.book?.toc ?? [];
 }
 
-// move the text to the chapter matching the playing track (when 1:1)
+// move the text to the chapter this track is mapped to
 function syncTextToTrack(i: number) {
   const toc = tocTop();
-  if (toc.length === audioNames.length && toc[i]?.href) {
-    view?.goTo(toc[i].href).catch(() => {});
+  const ch = audioMap[i];
+  if (ch != null && ch >= 0 && toc[ch]?.href) {
+    view?.goTo(toc[ch].href).catch(() => {});
   }
 }
 
@@ -871,9 +893,8 @@ async function playTrack(i: number, time = 0, autoplay = true) {
 async function openAudiobook() {
   if (!currentId || !view) return;
   if (!audioNames.length) {
-    // desktop: pick a folder of audio files; mobile: multi-select files
-    if (PLATFORM === "desktop" || PLATFORM === "web") $("#audio-folder-input").click();
-    else $("#audio-input").click();
+    audioImportTarget = "play";
+    pickAudio();
     return;
   }
   stopTTS();
@@ -918,22 +939,43 @@ function wireAudio() {
     const input = e.target as HTMLInputElement;
     const files = [...(input.files || [])];
     input.value = "";
-    if (!files.length) return;
-    if (audioImportTarget === "details" && detailsId) {
-      const id = detailsId;
-      const names = await storeAudio(id, files);
-      audioImportTarget = "play";
-      if (names) {
-        if (id === currentId) audioNames = names;
-        const rec = await getBook(id);
-        if (rec) openDetails(rec); // refresh the details page
-      }
-    } else {
-      await importAudio(files);
-    }
+    await ingestAudio(files);
   };
   $<HTMLInputElement>("#audio-input").addEventListener("change", onAudioFiles);
   $<HTMLInputElement>("#audio-folder-input").addEventListener("change", onAudioFiles);
+
+  // Android native folder picker → list of {name, path}; read each into a File
+  window.addEventListener("audio-folder", async (e) => {
+    let list: { name: string; path: string }[] = [];
+    try {
+      list = JSON.parse((e as CustomEvent).detail);
+    } catch {
+      /* ignore */
+    }
+    const files: File[] = [];
+    for (const it of list) {
+      const buf = await readFileBytes(it.path);
+      if (buf) files.push(new File([buf], it.name));
+    }
+    await ingestAudio(files);
+  });
+}
+
+// Route imported audio to the open book (play) or the details page being edited.
+async function ingestAudio(files: File[]) {
+  if (!files.length) return;
+  if (audioImportTarget === "details" && detailsId) {
+    const id = detailsId;
+    const names = await storeAudio(id, files);
+    audioImportTarget = "play";
+    if (names) {
+      if (id === currentId) audioNames = names;
+      const rec = await getBook(id);
+      if (rec) openDetails(rec); // refresh the details page
+    }
+  } else {
+    await importAudio(files);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,6 +1390,7 @@ async function openBook(record: BookRecord) {
   buildTOC();
   buildBookmarks();
   buildHighlights();
+  await loadAudioMap();
   await setLastOpened(record.id);
   closeOverlays();
   acquireWake();
@@ -1630,21 +1673,33 @@ async function openDetails(rec: BookRecord) {
   }
   if (detailsId !== rec.id) return; // user navigated away while analysing
   const tracks = await getAudioTracks(rec.id);
-  renderDetails(rec, meta, stats, tracks);
+  let map = await getAudioMap(rec.id);
+  if (map.length !== tracks.length)
+    map = defaultAudioMap(tracks.length, stats.chapters.length);
+  renderDetails(rec, meta, stats, tracks, map);
 }
 
-function chaptersHtml(chapters: ChapterStat[], tracks: string[], mapped: boolean): string {
+function chaptersHtml(
+  chapters: ChapterStat[],
+  tracks: string[],
+  map: number[],
+): string {
   if (!chapters.length) return `<p class="hint">No chapter list.</p>`;
   return chapters
-    .map(
-      (c, i) => `
+    .map((c, i) => {
+      const files = tracks.filter((_, t) => map[t] === i);
+      const audio = files.length
+        ? `<span class="d-ch-sub">🎧 ${files.map((f) => escapeHtml(f)).join(", ")}</span>`
+        : "";
+      return `
       <button class="d-chapter" data-href="${escapeHtml(c.href || "")}">
         <span class="d-ch-title">${i + 1}. ${escapeHtml((c.label || "").trim() || "—")}</span>
         <span class="d-ch-sub">p. ${c.startPage}–${c.endPage} · ${c.pages} page${
           c.pages > 1 ? "s" : ""
-        }${mapped ? ` · 🎧 ${escapeHtml(tracks[i])}` : ""}</span>
-      </button>`,
-    )
+        }</span>
+        ${audio}
+      </button>`;
+    })
     .join("");
 }
 
@@ -1653,6 +1708,7 @@ function renderDetails(
   meta: any,
   stats: BookStats,
   tracks: string[],
+  map: number[],
 ) {
   const title = formatLangMap(meta.title) || rec.title;
   const author = formatContributor(meta.author) || rec.author;
@@ -1661,16 +1717,11 @@ function renderDetails(
   const ext = (rec.fileName.split(".").pop() || "").toUpperCase();
   const size = (rec.data.byteLength / 1048576).toFixed(1) + " MB";
   const nChapters = stats.chapters.length;
-  const mapped = tracks.length > 0 && tracks.length === nChapters;
   const num = (n: number) => n.toLocaleString();
 
   const audioStatus = !tracks.length
     ? "No audiobook linked."
-    : mapped
-      ? `${tracks.length} files · auto-mapped to chapters`
-      : tracks.length === 1
-        ? "1 file · plays as one track (whole book)"
-        : `${tracks.length} files · ${nChapters} chapters (no 1:1 map — plays in order)`;
+    : `${tracks.length} audio file${tracks.length > 1 ? "s" : ""} mapped across ${nChapters} chapters`;
 
   $("#details-body").innerHTML = `
     <div class="d-head">
@@ -1702,14 +1753,17 @@ function renderDetails(
     <p class="d-note">${audioStatus}</p>
     ${
       tracks.length
-        ? `<button id="d-remove-audio" class="open-btn danger">Remove audiobook</button>`
+        ? `<div class="d-audio-actions">
+             <button id="d-map" class="open-btn ghost">Map audio ↔ chapters</button>
+             <button id="d-remove-audio" class="open-btn danger">Remove</button>
+           </div>`
         : `<button id="d-add-audio" class="open-btn">+ Link audiobook ${
-            PLATFORM === "desktop" || PLATFORM === "web" ? "folder" : "files"
+            PLATFORM === "ios" ? "files" : "folder"
           }</button>`
     }
 
     <h3 class="group mark-head">Chapters</h3>
-    <div class="d-chapters">${chaptersHtml(stats.chapters, tracks, mapped)}</div>
+    <div class="d-chapters">${chaptersHtml(stats.chapters, tracks, map)}</div>
   `;
 
   const body = $("#details-body");
@@ -1718,9 +1772,11 @@ function renderDetails(
   );
   body.querySelector("#d-add-audio")?.addEventListener("click", () => {
     audioImportTarget = "details";
-    if (PLATFORM === "desktop" || PLATFORM === "web") $("#audio-folder-input").click();
-    else $("#audio-input").click();
+    pickAudio();
   });
+  body.querySelector("#d-map")?.addEventListener("click", () =>
+    renderMapper(rec, stats.chapters, tracks, map),
+  );
   body.querySelector("#d-remove-audio")?.addEventListener("click", async () => {
     if (!confirm("Remove the linked audiobook?")) return;
     await deleteAudio(rec.id);
@@ -1827,6 +1883,77 @@ function editEpubMetadata(bytes: ArrayBuffer, title: string, author: string): Ar
   }
   const out = zipSync(ordered as any);
   return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+}
+
+// ---- audio ↔ chapter mapper (many files per chapter) ----
+function renderMapper(
+  rec: BookRecord,
+  chapters: ChapterStat[],
+  tracks: string[],
+  map: number[],
+) {
+  const opts = (sel: number) =>
+    chapters
+      .map(
+        (c, i) =>
+          `<option value="${i}" ${i === sel ? "selected" : ""}>${i + 1}. ${escapeHtml(
+            (c.label || "").trim() || "—",
+          )}</option>`,
+      )
+      .join("");
+  const rows = tracks
+    .map(
+      (name, t) => `
+      <div class="map-row">
+        <span class="map-file" title="${escapeHtml(name)}">${t + 1}. ${escapeHtml(name)}</span>
+        <select class="map-sel" data-track="${t}">${opts(map[t] ?? 0)}</select>
+      </div>`,
+    )
+    .join("");
+
+  $("#details-body").innerHTML = `
+    <h3 class="group mark-head">Map audio → chapters</h3>
+    <p class="d-note">Assign each audio file to a chapter. Several files can share one chapter.</p>
+    <div class="map-actions">
+      <button id="map-even" class="open-btn ghost">Distribute evenly</button>
+    </div>
+    <div class="map-list">${rows}</div>
+    <div class="d-edit-actions">
+      <button id="map-cancel" class="open-btn ghost">Cancel</button>
+      <button id="map-save" class="open-btn">Save</button>
+    </div>`;
+
+  $("#map-even").addEventListener("click", () => {
+    const even = defaultAudioMap(tracks.length, chapters.length);
+    document
+      .querySelectorAll<HTMLSelectElement>("#details-body .map-sel")
+      .forEach((s, t) => (s.value = String(even[t])));
+  });
+  $("#map-cancel").addEventListener("click", () => openDetails(rec));
+  $("#map-save").addEventListener("click", async () => {
+    const m = [...map];
+    document
+      .querySelectorAll<HTMLSelectElement>("#details-body .map-sel")
+      .forEach((s) => (m[Number(s.dataset.track)] = Number(s.value)));
+    await setAudioMap(rec.id, m);
+    if (rec.id === currentId) audioMap = m;
+    openDetails(rec);
+  });
+}
+
+// Trigger the right audio picker: native folder picker on Android if available,
+// folder input on desktop/web, else multi-file input.
+function pickAudio() {
+  if (PLATFORM === "android" && typeof (window as any).ReaderNative?.pickAudioFolder === "function") {
+    try {
+      (window as any).ReaderNative.pickAudioFolder();
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  if (PLATFORM === "desktop" || PLATFORM === "web") $("#audio-folder-input").click();
+  else $("#audio-input").click();
 }
 
 // ---------------------------------------------------------------------------

@@ -180,7 +180,17 @@ export async function deleteAudio(bookId: string): Promise<void> {
   const names = await getAudioTracks(bookId);
   await del(`audioManifest:${bookId}`);
   for (let i = 0; i < names.length; i++) await del(`audioBlob:${bookId}:${i}`);
+  await del(`audioMap:${bookId}`);
   localStorage.removeItem(`audioPos:${bookId}`);
+}
+
+// Per-track chapter index (many audio files can map to one chapter).
+export async function getAudioMap(bookId: string): Promise<number[]> {
+  return (await get<number[]>(`audioMap:${bookId}`)) ?? [];
+}
+
+export async function setAudioMap(bookId: string, map: number[]): Promise<void> {
+  await set(`audioMap:${bookId}`, map);
 }
 
 export interface AudioPos {

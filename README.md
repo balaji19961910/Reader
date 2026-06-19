@@ -44,9 +44,10 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
 - **Read aloud (TTS)** — play / pause / **stop**; starts from your **selection** (or the
   first word of the current view); word-by-word highlight + auto-scroll; voice + speed.
   Uses **Web Speech** on desktop/iOS and the **native Android TextToSpeech** engine on Android
-- **Audiobook** — link per-chapter audio (M4B/MP3/…) from the **book details page** via
-  **folder** (desktop) or multi-select (mobile); tracks **auto-map to chapters in order**
-  and the **text follows the audio**
+- **Audiobook** — link audio (M4B/MP3/…) from the **book details page** via a **folder
+  picker** (desktop *and* Android), with a **mapper UI** to assign audio files to chapters
+  (several files per chapter supported; "distribute evenly" helper). The **text follows the
+  audio** chapter during playback
 - **Unified player bar** (TTS + audiobook) — a 2-line bar: progress (`current | ==== | total`)
   on top; controls below (**⏪ 10s · play/pause · stop · 10s ⏩** + a compact **speed pill**,
   0.25×–5×). The ▶ button chooses Text-to-speech or Audiobook

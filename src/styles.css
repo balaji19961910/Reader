@@ -618,6 +618,27 @@ input[type="checkbox"] {
   justify-content: flex-end;
   margin-top: 16px;
 }
+.d-audio-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.map-actions { margin-bottom: 10px; }
+.map-list { display: flex; flex-direction: column; gap: 8px; }
+.map-row { display: flex; align-items: center; gap: 8px; }
+.map-file {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.map-sel {
+  flex: 0 0 auto;
+  max-width: 46%;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-bg);
+  color: var(--chrome-fg);
+}
 .d-chapters { display: flex; flex-direction: column; }
 .d-chapter {
   text-align: left;

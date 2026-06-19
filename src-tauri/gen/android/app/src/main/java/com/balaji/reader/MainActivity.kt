@@ -16,6 +16,8 @@ import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
+import androidx.documentfile.provider.DocumentFile
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
@@ -25,6 +27,7 @@ class MainActivity : TauriActivity() {
   @Volatile private var pipEnabled = false
   @Volatile private var pendingFile: String? = null
   private var webView: WebView? = null
+  private val REQ_AUDIO_FOLDER = 4201
 
   // Android WebView lacks the Web Speech API, so TTS uses the native engine.
   private var tts: TextToSpeech? = null
@@ -91,7 +94,56 @@ class MainActivity : TauriActivity() {
     if (pipEnabled) enterPipMode()
   }
 
+  // Folder picker (SAF) → copy audio files to cache → hand paths to the web layer.
+  @Deprecated("deprecated")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode != REQ_AUDIO_FOLDER || resultCode != RESULT_OK) return
+    val tree = data?.data ?: return
+    Thread {
+      try {
+        val dir = DocumentFile.fromTreeUri(this, tree) ?: return@Thread
+        val exts = setOf("m4b", "m4a", "mp4", "mp3", "aac", "ogg", "oga", "opus", "wav", "flac")
+        val arr = JSONArray()
+        var n = 0
+        for (f in dir.listFiles()) {
+          val name = f.name ?: continue
+          val ext = name.substringAfterLast('.', "").lowercase()
+          if (!f.isFile) continue
+          if (!exts.contains(ext) && f.type?.startsWith("audio/") != true) continue
+          val cacheFile = File(cacheDir, "ab_${n++}_$name")
+          contentResolver.openInputStream(f.uri)?.use { input ->
+            cacheFile.outputStream().use { out -> input.copyTo(out) }
+          }
+          arr.put(JSONObject().put("name", name).put("path", cacheFile.absolutePath))
+        }
+        val json = arr.toString()
+        runOnUiThread {
+          val wv = webView ?: return@runOnUiThread
+          wv.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('audio-folder',{detail:${JSONObject.quote(json)}}))",
+            null,
+          )
+        }
+      } catch (e: Exception) {
+        e.printStackTrace()
+      }
+    }.start()
+  }
+
   inner class Bridge {
+    // Pick a folder of audio files (Storage Access Framework).
+    @JavascriptInterface
+    fun pickAudioFolder() {
+      runOnUiThread {
+        try {
+          startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_AUDIO_FOLDER)
+        } catch (e: Exception) {
+          e.printStackTrace()
+        }
+      }
+    }
+
     @JavascriptInterface
     fun setVolumePaging(enabled: Boolean) {
       volumePaging = enabled

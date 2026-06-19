@@ -4,6 +4,10 @@
 import literataUrl from "./fonts/literata.woff2";
 import atkinsonUrl from "./fonts/atkinson.woff2";
 import opendyslexicUrl from "./fonts/opendyslexic.woff2";
+import bitterUrl from "./fonts/bitter.woff2";
+import loraUrl from "./fonts/lora.woff2";
+import merriweatherUrl from "./fonts/merriweather.woff2";
+import interUrl from "./fonts/inter.woff2";
 
 export interface BundledFont {
   key: string; // selector value, e.g. "bundled:literata"
@@ -20,6 +24,15 @@ export const BUNDLED_FONTS: BundledFont[] = [
     family: "ReaderAtkinson",
     url: atkinsonUrl,
   },
+  { key: "bundled:bitter", label: "Bitter", family: "ReaderBitter", url: bitterUrl },
+  { key: "bundled:lora", label: "Lora", family: "ReaderLora", url: loraUrl },
+  {
+    key: "bundled:merriweather",
+    label: "Merriweather",
+    family: "ReaderMerriweather",
+    url: merriweatherUrl,
+  },
+  { key: "bundled:inter", label: "Inter", family: "ReaderInter", url: interUrl },
   {
     key: "bundled:opendyslexic",
     label: "OpenDyslexic",

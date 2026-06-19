@@ -68,8 +68,18 @@ export async function getLastOpened(): Promise<string | undefined> {
 }
 
 // ---- Display settings (small, kept in localStorage) ----
+export type Theme =
+  | "light"
+  | "paper"
+  | "sepia"
+  | "gray"
+  | "dark"
+  | "nord"
+  | "solarizeddark"
+  | "black";
+
 export interface Settings {
-  theme: "light" | "sepia" | "dark" | "black";
+  theme: Theme;
   flow: "scrolled" | "paginated";
   font: string;
   fontSize: number; // percent
@@ -143,4 +153,51 @@ export function loadSettings(): Settings {
 
 export function saveSettings(s: Settings): void {
   localStorage.setItem("app:settings", JSON.stringify(s));
+}
+
+// ---------------------------------------------------------------------------
+// Audiobook (per-book ordered audio tracks; blobs stored separately so they
+// load lazily rather than all at once — audiobooks can be hundreds of MB)
+// ---------------------------------------------------------------------------
+
+export async function getAudioTracks(bookId: string): Promise<string[]> {
+  return (await get<string[]>(`audioManifest:${bookId}`)) ?? [];
+}
+
+export async function setAudioTracks(bookId: string, names: string[]): Promise<void> {
+  await set(`audioManifest:${bookId}`, names);
+}
+
+export async function setAudioBlob(bookId: string, i: number, blob: Blob): Promise<void> {
+  await set(`audioBlob:${bookId}:${i}`, blob);
+}
+
+export async function getAudioBlob(bookId: string, i: number): Promise<Blob | undefined> {
+  return get<Blob>(`audioBlob:${bookId}:${i}`);
+}
+
+export async function deleteAudio(bookId: string): Promise<void> {
+  const names = await getAudioTracks(bookId);
+  await del(`audioManifest:${bookId}`);
+  for (let i = 0; i < names.length; i++) await del(`audioBlob:${bookId}:${i}`);
+  localStorage.removeItem(`audioPos:${bookId}`);
+}
+
+export interface AudioPos {
+  track: number;
+  time: number;
+}
+
+export function loadAudioPos(bookId: string): AudioPos {
+  try {
+    const raw = localStorage.getItem(`audioPos:${bookId}`);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    /* ignore */
+  }
+  return { track: 0, time: 0 };
+}
+
+export function saveAudioPos(bookId: string, pos: AudioPos): void {
+  localStorage.setItem(`audioPos:${bookId}`, JSON.stringify(pos));
 }

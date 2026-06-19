@@ -7,12 +7,18 @@ import {
   Bookmark,
   Settings,
   deleteBook,
+  getAudioBlob,
+  getAudioTracks,
   getBook,
   getLastOpened,
   listBooks,
+  loadAudioPos,
   loadSettings,
+  saveAudioPos,
   saveBook,
   saveSettings,
+  setAudioBlob,
+  setAudioTracks,
   setLastOpened,
 } from "./db";
 import {
@@ -34,9 +40,13 @@ type AnyView = any;
 const ACCENT = "#3b82f6";
 const THEME_COLORS: Record<Settings["theme"], { bg: string; color: string }> = {
   light: { bg: "#ffffff", color: "#1a1a1a" },
+  paper: { bg: "#f6f0e3", color: "#43403a" }, // warm off-white, low glare
   sepia: { bg: "#f4ecd8", color: "#5b4636" },
+  gray: { bg: "#dcdcdc", color: "#2c2c2c" }, // soft gray, low contrast
   dark: { bg: "#1e1e1e", color: "#cfcfcf" },
-  black: { bg: "#000000", color: "#b8b8b8" },
+  nord: { bg: "#2e3440", color: "#d8dee9" }, // cool blue-gray dark
+  solarizeddark: { bg: "#002b36", color: "#93a1a1" },
+  black: { bg: "#000000", color: "#b8b8b8" }, // OLED
 };
 
 // ---- DOM ----
@@ -52,6 +62,7 @@ const emptyHint = $("#empty-hint");
 const fileInput = $<HTMLInputElement>("#file-input");
 const tocEl = $("#toc");
 const tocList = $("#toc-list");
+const searchEl = $("#search");
 const PLATFORM = platform();
 
 // ---- State ----
@@ -425,15 +436,40 @@ function buildHighlights() {
 // Text to speech (Web Speech API + foliate word marks)
 // ---------------------------------------------------------------------------
 
-const ttsSupported = "speechSynthesis" in window;
+// Web Speech works on desktop/iOS; Android WebView lacks it, so we fall back to
+// a native Android TextToSpeech engine exposed via the ReaderNative bridge.
+const webTTS =
+  typeof window !== "undefined" &&
+  "speechSynthesis" in window &&
+  typeof SpeechSynthesisUtterance !== "undefined";
+const nativeTTS = (): boolean =>
+  typeof (window as any).ReaderNative?.ttsSpeak === "function";
+let ttsEngine: "web" | "native" | "none" = "none";
+let ttsSupported = false;
+
 let ttsActive = false; // a read-aloud session is ongoing (playing or paused)
 let ttsPlaying = false;
 let voices: SpeechSynthesisVoice[] = [];
 let ttsVoiceObj: SpeechSynthesisVoice | null = null;
 let lastHlWin: any = null;
+let currentMarks: { name: string; pos: number }[] = [];
+let awaitingEnd = false; // guards against stale end events when skipping/seeking
+
+function cancelSpeech() {
+  awaitingEnd = false;
+  if (ttsEngine === "native") {
+    try {
+      (window as any).ReaderNative?.ttsStop?.();
+    } catch {
+      /* ignore */
+    }
+  } else if (webTTS) {
+    speechSynthesis.cancel();
+  }
+}
 
 function loadVoices() {
-  if (!ttsSupported) return;
+  if (!webTTS) return;
   voices = speechSynthesis.getVoices();
   const sel = $<HTMLSelectElement>("#tts-voice");
   sel.innerHTML =
@@ -457,6 +493,7 @@ function setTtsButton() {
   b.classList.toggle("on", ttsActive);
   // the stop button only shows while a read-aloud session is active
   $("#btn-tts-stop").style.display = ttsActive ? "" : "none";
+  updatePlayPauseIcon();
 }
 
 // Highlight + auto-scroll the spoken word (foliate hands us a DOM Range).
@@ -527,6 +564,28 @@ async function ensureTTS(): Promise<boolean> {
   return !!view.tts;
 }
 
+// Highlight the spoken word given its character index in the current block.
+function handleTtsBoundary(charIndex: number) {
+  let m: { name: string; pos: number } | null = null;
+  for (const mk of currentMarks) {
+    if (mk.pos <= charIndex) m = mk;
+    else break;
+  }
+  if (m && view?.tts) {
+    try {
+      view.tts.setMark(m.name);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function handleTtsEnd() {
+  if (!awaitingEnd) return; // ignore end events from a cancelled utterance
+  awaitingEnd = false;
+  if (ttsActive && ttsPlaying) onBlockEnd();
+}
+
 function speakSSML(ssml: string | undefined) {
   if (!ssml) {
     onBlockEnd();
@@ -537,29 +596,22 @@ function speakSSML(ssml: string | undefined) {
     onBlockEnd();
     return;
   }
+  currentMarks = marks;
+  awaitingEnd = true;
+  if (ttsEngine === "native") {
+    try {
+      (window as any).ReaderNative.ttsSpeak(text, settings.ttsRate);
+    } catch {
+      handleTtsEnd();
+    }
+    return;
+  }
   const u = new SpeechSynthesisUtterance(text);
   u.rate = settings.ttsRate;
   if (ttsVoiceObj) u.voice = ttsVoiceObj;
-  u.onboundary = (e) => {
-    let m: { name: string; pos: number } | null = null;
-    for (const mk of marks) {
-      if (mk.pos <= e.charIndex) m = mk;
-      else break;
-    }
-    if (m && view?.tts) {
-      try {
-        view.tts.setMark(m.name);
-      } catch {
-        /* ignore */
-      }
-    }
-  };
-  u.onend = () => {
-    if (ttsActive && ttsPlaying) onBlockEnd();
-  };
-  u.onerror = () => {
-    if (ttsActive && ttsPlaying) onBlockEnd();
-  };
+  u.onboundary = (e) => handleTtsBoundary(e.charIndex);
+  u.onend = handleTtsEnd;
+  u.onerror = handleTtsEnd;
   speechSynthesis.speak(u);
 }
 
@@ -596,9 +648,11 @@ async function advanceSection() {
 
 async function startTTS() {
   if (!ttsSupported || !view) return;
+  stopAudio(); // the two playback modes are mutually exclusive
   if (!(await ensureTTS())) return;
   ttsActive = true;
   ttsPlaying = true;
+  showPlayer("tts");
   setTtsButton();
   applyVolumeNative(); // release volume keys so they control speech loudness
 
@@ -629,28 +683,341 @@ async function startTTS() {
 
 function pauseResumeTTS() {
   if (!ttsActive) return;
-  if (ttsPlaying) {
-    speechSynthesis.pause();
-    ttsPlaying = false;
+  if (ttsEngine === "native") {
+    // Android TextToSpeech has no pause — stop, and resume from the last word.
+    if (ttsPlaying) {
+      awaitingEnd = false; // the stop below must not trigger auto-advance
+      try {
+        (window as any).ReaderNative?.ttsStop?.();
+      } catch {
+        /* ignore */
+      }
+      ttsPlaying = false;
+    } else {
+      ttsPlaying = true;
+      try {
+        speakSSML(view.tts.resume());
+      } catch {
+        /* ignore */
+      }
+    }
   } else {
-    speechSynthesis.resume();
-    ttsPlaying = true;
+    if (ttsPlaying) {
+      speechSynthesis.pause();
+      ttsPlaying = false;
+    } else {
+      speechSynthesis.resume();
+      ttsPlaying = true;
+    }
   }
   setTtsButton();
 }
 
 function stopTTS() {
-  if (ttsSupported) speechSynthesis.cancel();
+  awaitingEnd = false;
+  if (ttsEngine === "native") {
+    try {
+      (window as any).ReaderNative?.ttsStop?.();
+    } catch {
+      /* ignore */
+    }
+  } else if (webTTS) {
+    speechSynthesis.cancel();
+  }
+  const wasActive = ttsActive;
   ttsActive = false;
   ttsPlaying = false;
   clearTtsHighlight();
   setTtsButton();
   applyVolumeNative();
+  if (wasActive) hidePlayer();
 }
 
-function toggleTTS() {
-  if (!ttsActive) startTTS();
-  else pauseResumeTTS();
+// ---------------------------------------------------------------------------
+// Unified playback bar (shared by TTS and the audiobook player)
+// ---------------------------------------------------------------------------
+
+let playerMode: "tts" | "audio" | null = null;
+
+function fmtTime(s: number): string {
+  if (!isFinite(s)) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+function updatePlayPauseIcon() {
+  const playing =
+    playerMode === "tts" ? ttsPlaying : playerMode === "audio" ? !audioEl.paused : false;
+  $("#pb-play").innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+}
+
+function showPlayer(mode: "tts" | "audio") {
+  playerMode = mode;
+  $("#player-bar").hidden = false;
+  // chapter skip buttons only make sense for multi-file audiobooks
+  const showCh = mode === "audio" && audioNames.length > 1;
+  $("#pb-prev").style.display = showCh ? "" : "none";
+  $("#pb-next").style.display = showCh ? "" : "none";
+  $<HTMLSelectElement>("#pb-speed").value = String(
+    mode === "audio" ? audioRate : settings.ttsRate,
+  );
+  if (mode === "tts") {
+    $("#pb-title").textContent = "Read aloud";
+    $("#pb-time").textContent = "";
+  }
+  updatePlayPauseIcon();
+}
+
+function hidePlayer() {
+  $("#player-bar").hidden = true;
+  playerMode = null;
+}
+
+// ---------------------------------------------------------------------------
+// Audiobook (per-chapter audio files mapped to the book's chapters)
+// ---------------------------------------------------------------------------
+
+const audioEl = $<HTMLAudioElement>("#audio-el");
+let audioNames: string[] = [];
+let audioTrack = 0;
+let audioActive = false;
+let audioUrl: string | null = null;
+let audioSaveTimer: number | undefined;
+let audioRate = parseFloat(localStorage.getItem("audioRate") || "1") || 1;
+
+// top-level chapters used for the track↔chapter mapping
+function tocTop(): any[] {
+  return view?.book?.toc ?? [];
+}
+
+function updateAudioTitle() {
+  const toc = tocTop();
+  const label =
+    toc.length === audioNames.length && toc[audioTrack]?.label
+      ? toc[audioTrack].label.trim()
+      : audioNames[audioTrack] || "—";
+  $("#pb-title").textContent =
+    audioNames.length > 1 ? `${audioTrack + 1}/${audioNames.length} · ${label}` : label;
+}
+
+// move the text to the chapter matching the playing track (when 1:1)
+function syncTextToTrack(i: number) {
+  const toc = tocTop();
+  if (toc.length === audioNames.length && toc[i]?.href) {
+    view?.goTo(toc[i].href).catch(() => {});
+  }
+}
+
+const AUDIO_RE = /\.(m4b|m4a|mp4|mp3|aac|ogg|oga|opus|wav|flac)$/i;
+
+async function importAudio(files: File[]) {
+  if (!currentId) return;
+  // a folder import may include covers/metadata — keep only audio
+  const audio = files.filter(
+    (f) => AUDIO_RE.test(f.name) || f.type.startsWith("audio/"),
+  );
+  if (!audio.length) {
+    alert("No audio files found.");
+    return;
+  }
+  const key = (f: File) => (f as any).webkitRelativePath || f.name;
+  const sorted = audio.sort((a, b) =>
+    key(a).localeCompare(key(b), undefined, { numeric: true }),
+  );
+  audioNames = sorted.map((f) => f.name);
+  await setAudioTracks(currentId, audioNames);
+  for (let i = 0; i < sorted.length; i++) await setAudioBlob(currentId, i, sorted[i]);
+  saveAudioPos(currentId, { track: 0, time: 0 });
+  openAudiobook();
+}
+
+async function playTrack(i: number, time = 0, autoplay = true) {
+  if (!currentId) return;
+  if (i < 0 || i >= audioNames.length) {
+    stopAudio();
+    return;
+  }
+  audioTrack = i;
+  const blob = await getAudioBlob(currentId, i);
+  if (!blob) return;
+  if (audioUrl) URL.revokeObjectURL(audioUrl);
+  audioUrl = URL.createObjectURL(blob);
+  audioEl.src = audioUrl;
+  audioEl.playbackRate = audioRate;
+  updateAudioTitle();
+  syncTextToTrack(i);
+  const begin = () => {
+    try {
+      if (time) audioEl.currentTime = time;
+    } catch {
+      /* ignore */
+    }
+    if (autoplay) audioEl.play().catch(() => {});
+  };
+  if (audioEl.readyState >= 1) begin();
+  else audioEl.addEventListener("loadedmetadata", begin, { once: true });
+}
+
+async function openAudiobook() {
+  if (!currentId || !view) return;
+  if (!audioNames.length) {
+    // desktop: pick a folder of audio files; mobile: multi-select files
+    if (PLATFORM === "desktop" || PLATFORM === "web") $("#audio-folder-input").click();
+    else $("#audio-input").click();
+    return;
+  }
+  stopTTS();
+  audioActive = true;
+  showPlayer("audio");
+  const pos = loadAudioPos(currentId);
+  await playTrack(Math.min(pos.track, audioNames.length - 1), pos.time, true);
+}
+
+function stopAudio() {
+  audioEl.pause();
+  if (audioActive) {
+    audioActive = false;
+    hidePlayer();
+  }
+}
+
+function persistAudioPos() {
+  if (currentId && audioActive)
+    saveAudioPos(currentId, { track: audioTrack, time: audioEl.currentTime });
+}
+
+function wireAudio() {
+  audioEl.addEventListener("play", updatePlayPauseIcon);
+  audioEl.addEventListener("pause", updatePlayPauseIcon);
+  audioEl.addEventListener("ended", () => playTrack(audioTrack + 1));
+  audioEl.addEventListener("timeupdate", () => {
+    if (playerMode !== "audio") return;
+    const d = audioEl.duration || 0;
+    if (d) {
+      $<HTMLInputElement>("#pb-seek").value = String(
+        Math.round((audioEl.currentTime / d) * 1000),
+      );
+    }
+    $("#pb-time").textContent = `${fmtTime(audioEl.currentTime)} / ${fmtTime(d)}`;
+    window.clearTimeout(audioSaveTimer);
+    audioSaveTimer = window.setTimeout(persistAudioPos, 1000);
+  });
+
+  const onAudioFiles = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const files = [...(input.files || [])];
+    input.value = "";
+    if (files.length) await importAudio(files);
+  };
+  $<HTMLInputElement>("#audio-input").addEventListener("change", onAudioFiles);
+  $<HTMLInputElement>("#audio-folder-input").addEventListener("change", onAudioFiles);
+}
+
+// ---------------------------------------------------------------------------
+// Shared player controls (dispatch to TTS or audio by mode)
+// ---------------------------------------------------------------------------
+
+function ttsSkip(dir: number) {
+  if (!view?.tts) return;
+  cancelSpeech();
+  const ssml = dir < 0 ? view.tts.prev() : view.tts.next();
+  if (ssml) speakSSML(ssml);
+}
+
+async function ttsSeekFraction(frac: number) {
+  if (!view) return;
+  cancelSpeech();
+  await view.goToFraction(frac);
+  await new Promise((r) => setTimeout(r, 300));
+  view.tts = null;
+  if (await ensureTTS()) {
+    let ssml: string | undefined;
+    try {
+      ssml = view.tts.from(view.lastLocation.range);
+    } catch {
+      ssml = view.tts.start();
+    }
+    speakSSML(ssml);
+  }
+}
+
+function wirePlayer() {
+  wireAudio();
+  $("#pb-play").addEventListener("click", () => {
+    if (playerMode === "tts") pauseResumeTTS();
+    else if (playerMode === "audio")
+      audioEl.paused ? audioEl.play().catch(() => {}) : audioEl.pause();
+    updatePlayPauseIcon();
+  });
+  $("#pb-back").addEventListener("click", () => {
+    if (playerMode === "audio") audioEl.currentTime = Math.max(0, audioEl.currentTime - 10);
+    else if (playerMode === "tts") ttsSkip(-1);
+  });
+  $("#pb-fwd").addEventListener("click", () => {
+    if (playerMode === "audio")
+      audioEl.currentTime = Math.min(audioEl.duration || 0, audioEl.currentTime + 10);
+    else if (playerMode === "tts") ttsSkip(1);
+  });
+  $("#pb-prev").addEventListener("click", () => playTrack(audioTrack - 1));
+  $("#pb-next").addEventListener("click", () => playTrack(audioTrack + 1));
+  $<HTMLInputElement>("#pb-seek").addEventListener("input", (e) => {
+    const frac = Number((e.target as HTMLInputElement).value) / 1000;
+    if (playerMode === "audio") {
+      const d = audioEl.duration || 0;
+      if (d) audioEl.currentTime = frac * d;
+    } else if (playerMode === "tts") {
+      ttsSeekFraction(frac);
+    }
+  });
+  $<HTMLSelectElement>("#pb-speed").addEventListener("change", (e) => {
+    const v = parseFloat((e.target as HTMLSelectElement).value) || 1;
+    if (playerMode === "audio") {
+      audioRate = v;
+      audioEl.playbackRate = v;
+      localStorage.setItem("audioRate", String(v));
+    } else if (playerMode === "tts") {
+      settings.ttsRate = v;
+      commit();
+      // apply immediately by re-speaking the current block
+      if (ttsPlaying && view?.tts) {
+        cancelSpeech();
+        speakSSML(view.tts.resume());
+      }
+    }
+  });
+  $("#pb-close").addEventListener("click", () => {
+    if (playerMode === "tts") stopTTS();
+    else {
+      persistAudioPos();
+      stopAudio();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Play source menu (▶ → Text-to-speech / Audiobook)
+// ---------------------------------------------------------------------------
+
+function openPlayMenu() {
+  const menu = $("#play-menu");
+  const r = $("#btn-tts").getBoundingClientRect();
+  menu.hidden = false;
+  menu.style.top = r.bottom + 6 + "px";
+  menu.style.right = window.innerWidth - r.right + "px";
+}
+function closePlayMenu() {
+  $("#play-menu").hidden = true;
+}
+
+// The ▶ toolbar button: pause/resume TTS if it's running, else choose a source.
+function onPlayButton() {
+  if (ttsActive) {
+    pauseResumeTTS();
+    return;
+  }
+  if ($("#play-menu").hidden) openPlayMenu();
+  else closePlayMenu();
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +1113,9 @@ function applyFlow() {
 
 async function openBook(record: BookRecord) {
   stopTTS();
+  stopAudio();
+  audioNames = await getAudioTracks(record.id);
+  audioTrack = 0;
   // tear down any existing view
   if (view) {
     try {
@@ -791,6 +1161,12 @@ async function openBook(record: BookRecord) {
       persistPosition(cfi, fraction ?? 0);
     }
     updateProgressLabel(fraction ?? 0);
+    // when reading aloud, the player bar shows reading progress
+    if (playerMode === "tts") {
+      const f = fraction ?? 0;
+      $<HTMLInputElement>("#pb-seek").value = String(Math.round(f * 1000));
+      $("#pb-time").textContent = Math.round(f * 100) + "%";
+    }
   });
 
   // each loaded section: keys, tap-to-toggle bars, wheel fix, text selection
@@ -1015,32 +1391,147 @@ function escapeHtml(s: string) {
 // Overlays
 // ---------------------------------------------------------------------------
 
-function openLibrary() {
+const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl];
+
+function openOverlay(el: HTMLElement) {
   showChrome();
-  settingsEl.classList.remove("open");
-  tocEl.classList.remove("open");
-  libraryEl.classList.add("open");
+  for (const o of ALL_OVERLAYS) o.classList.toggle("open", o === el);
   scrim.classList.add("show");
 }
-function openSettings() {
-  showChrome();
-  libraryEl.classList.remove("open");
-  tocEl.classList.remove("open");
-  settingsEl.classList.add("open");
-  scrim.classList.add("show");
-}
-function openTOC() {
-  showChrome();
-  libraryEl.classList.remove("open");
-  settingsEl.classList.remove("open");
-  tocEl.classList.add("open");
-  scrim.classList.add("show");
+const openLibrary = () => openOverlay(libraryEl);
+const openSettings = () => openOverlay(settingsEl);
+const openTOC = () => openOverlay(tocEl);
+function openSearch() {
+  openOverlay(searchEl);
+  setupGotoPlaceholder();
+  $<HTMLInputElement>("#search-input").focus();
 }
 function closeOverlays() {
-  libraryEl.classList.remove("open");
-  settingsEl.classList.remove("open");
-  tocEl.classList.remove("open");
+  for (const o of ALL_OVERLAYS) o.classList.remove("open");
   scrim.classList.remove("show");
+}
+
+// ---------------------------------------------------------------------------
+// Search & Go to
+// ---------------------------------------------------------------------------
+
+let searchScope: "chapter" | "book" = "book";
+let searchToken = 0;
+
+function currentIndex(): number {
+  try {
+    return view?.renderer?.getContents?.()?.[0]?.index ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function runSearch(query: string) {
+  const results = $("#search-results");
+  const count = $("#search-count");
+  const token = ++searchToken;
+  try {
+    view?.clearSearch?.();
+  } catch {
+    /* ignore */
+  }
+  query = query.trim();
+  if (!view || !query) {
+    results.innerHTML = `<p class="hint">Type to search.</p>`;
+    count.textContent = "";
+    return;
+  }
+  results.innerHTML = `<p class="hint">Searching…</p>`;
+  count.textContent = "";
+
+  const opts: any =
+    searchScope === "chapter" ? { query, index: currentIndex() } : { query };
+  let n = 0;
+  let cleared = false;
+  try {
+    for await (const r of view.search(opts)) {
+      if (token !== searchToken) return; // superseded by a newer search
+      if (r === "done") break;
+      const items = r.subitems
+        ? r.subitems.map((s: any) => ({ ...s, label: r.label }))
+        : r.cfi
+          ? [r]
+          : [];
+      for (const it of items) {
+        if (!cleared) {
+          results.innerHTML = "";
+          cleared = true;
+        }
+        results.appendChild(searchRow(it));
+        n++;
+        count.textContent = String(n);
+        if (n >= 500) {
+          // safety cap; avoid runaway lists on common words
+          results.appendChild(
+            Object.assign(document.createElement("p"), {
+              className: "hint",
+              textContent: "Showing first 500 matches.",
+            }),
+          );
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  if (token !== searchToken) return;
+  if (!n) results.innerHTML = `<p class="hint">No matches.</p>`;
+}
+
+function searchRow(item: any): HTMLElement {
+  const ex = item.excerpt || {};
+  const row = document.createElement("button");
+  row.className = "toc-item search-result";
+  row.innerHTML =
+    `<span class="ex-pre">${escapeHtml(ex.pre || "")}</span>` +
+    `<b class="ex-match">${escapeHtml(ex.match || "")}</b>` +
+    `<span class="ex-post">${escapeHtml(ex.post || "")}</span>`;
+  row.addEventListener("click", () => {
+    view?.goTo(item.cfi).catch(() => {});
+    closeOverlays();
+  });
+  return row;
+}
+
+// ---- Go to (page number if the book has a page list, else percentage) ----
+function flattenPageList(list: any[] | undefined, out: any[] = []): any[] {
+  for (const item of list || []) {
+    if (item.href) out.push(item);
+    if (item.subitems) flattenPageList(item.subitems, out);
+  }
+  return out;
+}
+
+function setupGotoPlaceholder() {
+  const pages = flattenPageList(view?.book?.pageList);
+  $<HTMLInputElement>("#goto-input").placeholder = pages.length
+    ? "Page number"
+    : "Position % (0–100)";
+}
+
+function goToPosition(value: string) {
+  const v = value.trim();
+  if (!view || !v) return;
+  const pages = flattenPageList(view.book?.pageList);
+  if (pages.length) {
+    const p = pages.find((x) => String(x.label).trim() === v);
+    if (p?.href) {
+      view.goTo(p.href).catch(() => {});
+      closeOverlays();
+      return;
+    }
+  }
+  const num = parseFloat(v);
+  if (!isNaN(num)) {
+    view.goToFraction(Math.max(0, Math.min(100, num)) / 100);
+    closeOverlays();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,8 +1620,42 @@ function commit() {
 
 function wireUi() {
   $("#btn-toc").addEventListener("click", openTOC);
+  $("#btn-search").addEventListener("click", openSearch);
   $("#btn-bookmark").addEventListener("click", addBookmark);
   $("#btn-library").addEventListener("click", openLibrary);
+
+  // --- Search & Go to ---
+  $("#btn-close-search").addEventListener("click", closeOverlays);
+  let searchTimer: number | undefined;
+  const searchInput = $<HTMLInputElement>("#search-input");
+  searchInput.addEventListener("input", () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => runSearch(searchInput.value), 300);
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      window.clearTimeout(searchTimer);
+      runSearch(searchInput.value);
+    }
+  });
+  document.querySelectorAll<HTMLElement>("#search-scope .chip").forEach((c) =>
+    c.addEventListener("click", () => {
+      searchScope = c.dataset.scope as "chapter" | "book";
+      document
+        .querySelectorAll<HTMLElement>("#search-scope .chip")
+        .forEach((x) => x.classList.toggle("on", x === c));
+      if (searchInput.value.trim()) runSearch(searchInput.value);
+    }),
+  );
+  const gotoInput = $<HTMLInputElement>("#goto-input");
+  $("#goto-go").addEventListener("click", () => goToPosition(gotoInput.value));
+  gotoInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") goToPosition(gotoInput.value);
+  });
+  // default search scope
+  document
+    .querySelectorAll<HTMLElement>("#search-scope .chip")
+    .forEach((c) => c.classList.toggle("on", c.dataset.scope === searchScope));
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-close-settings").addEventListener("click", closeOverlays);
   $("#btn-close-toc").addEventListener("click", closeOverlays);
@@ -1294,9 +1819,23 @@ function wireUi() {
     applyVolumeNative();
   });
 
-  // --- Read aloud (TTS) ---
-  $("#btn-tts").addEventListener("click", toggleTTS);
+  // --- Play (TTS / Audiobook) ---
+  $("#btn-tts").addEventListener("click", onPlayButton);
   $("#btn-tts-stop").addEventListener("click", stopTTS);
+  $("#menu-tts").addEventListener("click", () => {
+    closePlayMenu();
+    startTTS();
+  });
+  $("#menu-audio").addEventListener("click", () => {
+    closePlayMenu();
+    openAudiobook();
+  });
+  // close the play menu when clicking elsewhere
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target as HTMLElement;
+    if (!t.closest?.("#play-menu") && !t.closest?.("#btn-tts")) closePlayMenu();
+  });
+  wirePlayer();
   $<HTMLSelectElement>("#tts-voice").addEventListener("change", (e) => {
     settings.ttsVoice = (e.target as HTMLSelectElement).value;
     ttsVoiceObj = voices.find((v) => v.voiceURI === settings.ttsVoice) || null;
@@ -1347,13 +1886,32 @@ async function boot() {
   applyPlatformVisibility();
   syncSettingsUI();
 
-  // Text-to-speech: hide UI if unsupported, otherwise load voices
+  // Text-to-speech: pick the engine (web on desktop/iOS, native on Android)
+  ttsEngine =
+    PLATFORM === "android" && nativeTTS()
+      ? "native"
+      : webTTS
+        ? "web"
+        : nativeTTS()
+          ? "native"
+          : "none";
+  ttsSupported = ttsEngine !== "none";
   if (!ttsSupported) {
     $("#btn-tts").style.display = "none";
     $("#tts-group").style.display = "none";
   } else {
-    loadVoices();
-    speechSynthesis.onvoiceschanged = loadVoices;
+    if (ttsEngine === "web") {
+      loadVoices();
+      speechSynthesis.onvoiceschanged = loadVoices;
+    } else {
+      // native engine: no JS voice list, and word boundaries arrive as events
+      const voiceSetting = $("#tts-voice").closest(".setting") as HTMLElement | null;
+      if (voiceSetting) voiceSetting.style.display = "none";
+      window.addEventListener("tts-boundary", (e) =>
+        handleTtsBoundary(parseInt((e as CustomEvent).detail, 10) || 0),
+      );
+      window.addEventListener("tts-end", () => handleTtsEnd());
+    }
     setTtsButton();
   }
 

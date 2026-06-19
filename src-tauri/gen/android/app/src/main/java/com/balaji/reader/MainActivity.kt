@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Rational
 import android.view.KeyEvent
 import android.view.View
@@ -16,6 +18,7 @@ import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 
 class MainActivity : TauriActivity() {
   @Volatile private var volumePaging = true
@@ -23,12 +26,50 @@ class MainActivity : TauriActivity() {
   @Volatile private var pendingFile: String? = null
   private var webView: WebView? = null
 
+  // Android WebView lacks the Web Speech API, so TTS uses the native engine.
+  private var tts: TextToSpeech? = null
+  @Volatile private var ttsReady = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     volumePaging = getSharedPreferences("reader", Context.MODE_PRIVATE)
       .getBoolean("volumePaging", true)
+    initTts()
     handleIntent(intent)
+  }
+
+  private fun initTts() {
+    tts = TextToSpeech(this) { status ->
+      if (status == TextToSpeech.SUCCESS) {
+        tts?.language = Locale.getDefault()
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+          override fun onStart(id: String?) {}
+          override fun onDone(id: String?) = dispatchTts("tts-end", "")
+          @Deprecated("deprecated") override fun onError(id: String?) = dispatchTts("tts-end", "")
+          // word boundary (API 26+) → highlight the spoken word
+          override fun onRangeStart(id: String?, start: Int, end: Int, frame: Int) =
+            dispatchTts("tts-boundary", start.toString())
+        })
+        ttsReady = true
+      }
+    }
+  }
+
+  private fun dispatchTts(name: String, detail: String) {
+    val wv = webView ?: return
+    wv.post {
+      wv.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('$name',{detail:${JSONObject.quote(detail)}}))",
+        null,
+      )
+    }
+  }
+
+  override fun onDestroy() {
+    tts?.shutdown()
+    tts = null
+    super.onDestroy()
   }
 
   // Called when the WebView is created — register the JS bridge BEFORE the page
@@ -75,6 +116,22 @@ class MainActivity : TauriActivity() {
       val f = pendingFile
       pendingFile = null
       return f
+    }
+
+    // --- Text to speech (native Android engine) ---
+    @JavascriptInterface
+    fun ttsAvailable(): Boolean = ttsReady
+
+    @JavascriptInterface
+    fun ttsSpeak(text: String, rate: Float) {
+      val t = tts ?: return
+      t.setSpeechRate(rate)
+      t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u")
+    }
+
+    @JavascriptInterface
+    fun ttsStop() {
+      tts?.stop()
     }
   }
 

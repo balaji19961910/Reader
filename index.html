@@ -14,6 +14,9 @@
       <button id="btn-toc" class="icon-btn" title="Chapters">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z"/></svg>
       </button>
+      <button id="btn-search" class="icon-btn" title="Search / Go to">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      </button>
       <span id="book-title">Reader</span>
       <button id="btn-bookmark" class="icon-btn" title="Bookmark this page">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 11v6.97l-5-2.14-5 2.14V5h7V3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V11h-2zm4-4h-2v2h-2V7h-2V5h2V3h2v2h2v2z"/></svg>
@@ -87,6 +90,32 @@
       </div>
     </section>
 
+    <!-- Search & Go to -->
+    <section id="search" class="overlay panel-left">
+      <div class="overlay-head">
+        <h2>Search</h2>
+        <button id="btn-close-search" class="icon-btn" title="Close">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <input id="search-input" class="search-input" type="search" placeholder="Find in book…" />
+      <div id="search-scope" class="chip-row">
+        <button class="chip" data-scope="chapter">This chapter</button>
+        <button class="chip" data-scope="book">Whole book</button>
+      </div>
+
+      <h3 class="group mark-head">Go to</h3>
+      <div class="goto-row">
+        <input id="goto-input" class="search-input" type="text" placeholder="Position % (0–100)" />
+        <button id="goto-go" class="open-btn">Go</button>
+      </div>
+
+      <h3 class="group mark-head">Results <span id="search-count"></span></h3>
+      <div id="search-results" class="toc-list">
+        <p class="hint">Type to search.</p>
+      </div>
+    </section>
+
     <!-- Settings panel -->
     <section id="settings" class="overlay panel">
       <div class="overlay-head">
@@ -100,8 +129,12 @@
         <label>Theme</label>
         <div id="theme-row" class="chip-row">
           <button class="chip" data-theme="light">Light</button>
+          <button class="chip" data-theme="paper">Paper</button>
           <button class="chip" data-theme="sepia">Sepia</button>
+          <button class="chip" data-theme="gray">Gray</button>
           <button class="chip" data-theme="dark">Dark</button>
+          <button class="chip" data-theme="nord">Nord</button>
+          <button class="chip" data-theme="solarizeddark">Solarized</button>
           <button class="chip" data-theme="black">Black</button>
         </div>
       </div>
@@ -122,6 +155,10 @@
           <option value="'Iowan Old Style', 'Palatino', serif">Palatino</option>
           <option value="'Helvetica Neue', Arial, sans-serif">Sans-serif</option>
           <option value="bundled:literata">Literata</option>
+          <option value="bundled:bitter">Bitter</option>
+          <option value="bundled:lora">Lora</option>
+          <option value="bundled:merriweather">Merriweather</option>
+          <option value="bundled:inter">Inter</option>
           <option value="bundled:atkinson">Atkinson Hyperlegible</option>
           <option value="bundled:opendyslexic">OpenDyslexic</option>
         </select>
@@ -246,5 +283,52 @@
       <button id="sel-note" class="sel-act" title="Add note">Note</button>
       <button id="sel-copy" class="sel-act" title="Copy">Copy</button>
     </div>
+
+    <!-- ▶ source menu: TTS vs Audiobook -->
+    <div id="play-menu" class="play-menu" hidden>
+      <button id="menu-tts">🔊 Text-to-speech</button>
+      <button id="menu-audio">🎧 Audiobook</button>
+    </div>
+
+    <!-- Unified playback bar (TTS + audiobook) -->
+    <footer id="player-bar" hidden>
+      <button id="pb-prev" class="icon-btn" title="Previous chapter">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+      </button>
+      <button id="pb-back" class="icon-btn" title="Back 10s">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
+      </button>
+      <button id="pb-play" class="icon-btn" title="Play / pause"></button>
+      <button id="pb-fwd" class="icon-btn" title="Forward 10s">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+      </button>
+      <button id="pb-next" class="icon-btn" title="Next chapter">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      </button>
+      <div class="audio-mid">
+        <div id="pb-title" class="audio-title">—</div>
+        <input id="pb-seek" type="range" min="0" max="1000" value="0" />
+      </div>
+      <span id="pb-time" class="audio-time">0:00</span>
+      <select id="pb-speed" class="audio-speed" title="Speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option>
+        <option value="1.75">1.75×</option>
+        <option value="2">2×</option>
+        <option value="3">3×</option>
+        <option value="4">4×</option>
+        <option value="5">5×</option>
+      </select>
+      <button id="pb-close" class="icon-btn" title="Stop">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </footer>
+    <audio id="audio-el" preload="metadata"></audio>
+    <input id="audio-input" type="file" accept="audio/*,.m4b,.m4a,.mp3,.aac" multiple hidden />
+    <input id="audio-folder-input" type="file" webkitdirectory multiple hidden />
   </body>
 </html>

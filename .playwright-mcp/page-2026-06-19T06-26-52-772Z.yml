@@ -1,0 +1,385 @@
+- generic [active] [ref=e1]:
+  - banner:
+    - button "Chapters":
+      - img
+    - button "Search / Go to":
+      - img
+    - generic: Scroll Test Book
+    - button "Bookmark this page":
+      - img
+    - button "Read aloud":
+      - img
+    - button "Library":
+      - img
+    - button "Display settings":
+      - img
+  - main [ref=e22]:
+    - button "Previous" [ref=e23] [cursor=pointer]
+    - button "Next" [ref=e26] [cursor=pointer]
+  - contentinfo:
+    - generic: —
+  - generic [ref=e29]:
+    - generic [ref=e30]:
+      - heading "Library" [level=2] [ref=e31]
+      - generic [ref=e32] [cursor=pointer]: + Open book
+    - generic [ref=e33]:
+      - generic [ref=e34] [cursor=pointer]:
+        - generic [ref=e36]: Scroll Test Book
+        - generic [ref=e37]:
+          - generic [ref=e38]: Scroll Test Book
+          - generic [ref=e39]: Test Author
+        - button "Remove" [ref=e42]:
+          - img [ref=e43]
+      - generic [ref=e45] [cursor=pointer]:
+        - generic [ref=e47]: Scroll Test Book
+        - generic [ref=e48]:
+          - generic [ref=e49]: Scroll Test Book
+          - generic [ref=e50]: Test Author
+        - button "Remove" [ref=e52]:
+          - img [ref=e53]
+      - generic [ref=e55] [cursor=pointer]:
+        - generic [ref=e57]: Scroll Test Book
+        - generic [ref=e58]:
+          - generic [ref=e59]: Scroll Test Book
+          - generic [ref=e60]: Test Author
+        - button "Remove" [ref=e63]:
+          - img [ref=e64]
+  - generic [ref=e66]:
+    - generic [ref=e67]:
+      - heading "Contents" [level=2] [ref=e68]
+      - button "Close" [ref=e69] [cursor=pointer]:
+        - img [ref=e70]
+    - heading "Chapters" [level=3] [ref=e72]
+    - generic [ref=e73]:
+      - button "Chapter 1" [ref=e182] [cursor=pointer]
+      - button "Chapter 2" [ref=e183] [cursor=pointer]
+    - heading "Bookmarks" [level=3] [ref=e75]
+    - paragraph [ref=e184]: No bookmarks.
+    - heading "Highlights" [level=3] [ref=e78]
+    - paragraph [ref=e185]: No highlights.
+  - generic [ref=e81]:
+    - generic [ref=e82]:
+      - heading "Search" [level=2] [ref=e83]
+      - button "Close" [ref=e84] [cursor=pointer]:
+        - img [ref=e85]
+    - searchbox "Find in book…" [ref=e87]
+    - generic [ref=e88]:
+      - button "This chapter" [ref=e89] [cursor=pointer]
+      - button "Whole book" [ref=e90] [cursor=pointer]
+    - heading "Go to" [level=3] [ref=e91]
+    - generic [ref=e92]:
+      - textbox "Position % (0–100)" [ref=e93]
+      - button "Go" [ref=e94] [cursor=pointer]
+    - heading "Results" [level=3] [ref=e95]: Results
+    - paragraph [ref=e97]: Type to search.
+  - generic [ref=e98]:
+    - generic [ref=e99]:
+      - heading "Display" [level=2] [ref=e100]
+      - button "Close" [ref=e101] [cursor=pointer]:
+        - img [ref=e102]
+    - generic [ref=e104]:
+      - generic [ref=e105]: Theme
+      - generic [ref=e106]:
+        - button "Light" [ref=e107] [cursor=pointer]
+        - button "Paper" [ref=e108] [cursor=pointer]
+        - button "Sepia" [ref=e109] [cursor=pointer]
+        - button "Gray" [ref=e110] [cursor=pointer]
+        - button "Dark" [ref=e111] [cursor=pointer]
+        - button "Nord" [ref=e112] [cursor=pointer]
+        - button "Solarized" [ref=e113] [cursor=pointer]
+        - button "Black" [ref=e114] [cursor=pointer]
+    - generic [ref=e115]:
+      - generic [ref=e116]: Layout
+      - generic [ref=e117]:
+        - button "Scroll" [ref=e118] [cursor=pointer]
+        - button "Page" [ref=e119] [cursor=pointer]
+    - generic [ref=e120]:
+      - generic [ref=e121]: Font
+      - combobox [ref=e122]:
+        - option "Publisher default"
+        - option "Georgia"
+        - option "Palatino"
+        - option "Sans-serif"
+        - option "Literata" [selected]
+        - option "Bitter"
+        - option "Lora"
+        - option "Merriweather"
+        - option "Inter"
+        - option "Atkinson Hyperlegible"
+        - option "OpenDyslexic"
+    - generic [ref=e123]:
+      - generic [ref=e124]:
+        - text: Font size
+        - generic [ref=e125]: 100%
+      - slider [ref=e126]: "100"
+    - generic [ref=e127]:
+      - generic [ref=e128]:
+        - text: Line spacing
+        - generic [ref=e129]: "1.5"
+      - slider [ref=e130]: "1.5"
+    - generic [ref=e131]:
+      - generic [ref=e132]: Text alignment
+      - generic [ref=e133]:
+        - button "Left" [ref=e134] [cursor=pointer]
+        - button "Center" [ref=e135] [cursor=pointer]
+        - button "Right" [ref=e136] [cursor=pointer]
+        - button "Justify" [ref=e137] [cursor=pointer]
+    - generic [ref=e138]:
+      - generic [ref=e139]: Hyphenate (break words with “-”)
+      - checkbox "Hyphenate (break words with “-”)" [checked] [ref=e140] [cursor=pointer]
+    - generic [ref=e141]:
+      - generic [ref=e142]:
+        - text: Top margin
+        - generic [ref=e143]: 24px
+      - slider [ref=e144]: "24"
+    - generic [ref=e145]:
+      - generic [ref=e146]:
+        - text: Bottom margin
+        - generic [ref=e147]: 24px
+      - slider [ref=e148]: "24"
+    - generic [ref=e149]:
+      - generic [ref=e150]:
+        - text: Left margin
+        - generic [ref=e151]: 24px
+      - slider [ref=e152]: "24"
+    - generic [ref=e153]:
+      - generic [ref=e154]:
+        - text: Right margin
+        - generic [ref=e155]: 24px
+      - slider [ref=e156]: "24"
+    - separator [ref=e157]
+    - heading "Reading view" [level=3] [ref=e158]
+    - generic [ref=e159]:
+      - generic [ref=e160]: Auto-hide bars while reading
+      - checkbox "Auto-hide bars while reading" [checked] [ref=e161] [cursor=pointer]
+    - generic [ref=e162]:
+      - generic [ref=e163]: …but keep the header visible
+      - checkbox "…but keep the header visible" [ref=e164] [cursor=pointer]
+    - separator [ref=e165]
+    - heading "Screen" [level=3] [ref=e166]
+    - generic [ref=e167]:
+      - generic [ref=e168]: Keep screen awake while reading
+      - checkbox "Keep screen awake while reading" [checked] [ref=e169] [cursor=pointer]
+    - generic [ref=e170]:
+      - separator [ref=e171]
+      - heading "Read aloud" [level=3] [ref=e172]
+      - generic [ref=e173]:
+        - generic [ref=e174]: Voice
+        - combobox [ref=e175]:
+          - option "Default" [selected]
+          - option "Rishi (en-IN)"
+          - option "Albert (en-US)"
+          - option "Alice (it-IT)"
+          - option "Alva (sv-SE)"
+          - option "Amélie (fr-CA)"
+          - option "Amira (ms-MY)"
+          - option "Anna (de-DE)"
+          - option "Bad News (en-US)"
+          - option "Bahh (en-US)"
+          - option "Bells (en-US)"
+          - option "Boing (en-US)"
+          - option "Bubbles (en-US)"
+          - option "Carmit (he-IL)"
+          - option "Cellos (en-US)"
+          - option "Damayanti (id-ID)"
+          - option "Daniel (en-GB)"
+          - option "Daria (bg-BG)"
+          - option "Eddy (English (United Kingdom)) (en-GB)"
+          - option "Eddy (English (United States)) (en-US)"
+          - option "Eddy (Chinese (China mainland)) (zh-CN)"
+          - option "Eddy (Chinese (Taiwan)) (zh-TW)"
+          - option "Eddy (German (Germany)) (de-DE)"
+          - option "Eddy (Spanish (Spain)) (es-ES)"
+          - option "Eddy (Spanish (Mexico)) (es-MX)"
+          - option "Eddy (Finnish (Finland)) (fi-FI)"
+          - option "Eddy (French (Canada)) (fr-CA)"
+          - option "Eddy (French (France)) (fr-FR)"
+          - option "Eddy (Italian (Italy)) (it-IT)"
+          - option "Eddy (Japanese (Japan)) (ja-JP)"
+          - option "Eddy (Korean (South Korea)) (ko-KR)"
+          - option "Eddy (Portuguese (Brazil)) (pt-BR)"
+          - option "Ellen (nl-BE)"
+          - option "Flo (English (United Kingdom)) (en-GB)"
+          - option "Flo (English (United States)) (en-US)"
+          - option "Flo (Chinese (China mainland)) (zh-CN)"
+          - option "Flo (Chinese (Taiwan)) (zh-TW)"
+          - option "Flo (German (Germany)) (de-DE)"
+          - option "Flo (Spanish (Spain)) (es-ES)"
+          - option "Flo (Spanish (Mexico)) (es-MX)"
+          - option "Flo (Finnish (Finland)) (fi-FI)"
+          - option "Flo (French (Canada)) (fr-CA)"
+          - option "Flo (French (France)) (fr-FR)"
+          - option "Flo (Italian (Italy)) (it-IT)"
+          - option "Flo (Japanese (Japan)) (ja-JP)"
+          - option "Flo (Korean (South Korea)) (ko-KR)"
+          - option "Flo (Portuguese (Brazil)) (pt-BR)"
+          - option "Fred (en-US)"
+          - option "Geeta (te-IN)"
+          - option "Good News (en-US)"
+          - option "Grandma (English (United Kingdom)) (en-GB)"
+          - option "Grandma (English (United States)) (en-US)"
+          - option "Grandma (Chinese (China mainland)) (zh-CN)"
+          - option "Grandma (Chinese (Taiwan)) (zh-TW)"
+          - option "Grandma (German (Germany)) (de-DE)"
+          - option "Grandma (Spanish (Spain)) (es-ES)"
+          - option "Grandma (Spanish (Mexico)) (es-MX)"
+          - option "Grandma (Finnish (Finland)) (fi-FI)"
+          - option "Grandma (French (Canada)) (fr-CA)"
+          - option "Grandma (French (France)) (fr-FR)"
+          - option "Grandma (Italian (Italy)) (it-IT)"
+          - option "Grandma (Japanese (Japan)) (ja-JP)"
+          - option "Grandma (Korean (South Korea)) (ko-KR)"
+          - option "Grandma (Portuguese (Brazil)) (pt-BR)"
+          - option "Grandpa (English (United Kingdom)) (en-GB)"
+          - option "Grandpa (English (United States)) (en-US)"
+          - option "Grandpa (Chinese (China mainland)) (zh-CN)"
+          - option "Grandpa (Chinese (Taiwan)) (zh-TW)"
+          - option "Grandpa (German (Germany)) (de-DE)"
+          - option "Grandpa (Spanish (Spain)) (es-ES)"
+          - option "Grandpa (Spanish (Mexico)) (es-MX)"
+          - option "Grandpa (Finnish (Finland)) (fi-FI)"
+          - option "Grandpa (French (Canada)) (fr-CA)"
+          - option "Grandpa (French (France)) (fr-FR)"
+          - option "Grandpa (Italian (Italy)) (it-IT)"
+          - option "Grandpa (Japanese (Japan)) (ja-JP)"
+          - option "Grandpa (Korean (South Korea)) (ko-KR)"
+          - option "Grandpa (Portuguese (Brazil)) (pt-BR)"
+          - option "Ioana (ro-RO)"
+          - option "Jacques (fr-FR)"
+          - option "Jester (en-US)"
+          - option "Joana (pt-PT)"
+          - option "Junior (en-US)"
+          - option "Kanya (th-TH)"
+          - option "Karen (en-AU)"
+          - option "Kathy (en-US)"
+          - option "Kyoko (ja-JP)"
+          - option "Lana (hr-HR)"
+          - option "Laura (sk-SK)"
+          - option "Lekha (hi-IN)"
+          - option "Lesya (uk-UA)"
+          - option "Linh (vi-VN)"
+          - option "Luciana (pt-BR)"
+          - option "Majed (ar-001)"
+          - option "Meijia (zh-TW)"
+          - option "Melina (el-GR)"
+          - option "Milena (ru-RU)"
+          - option "Moira (en-IE)"
+          - option "Montse (ca-ES)"
+          - option "Mónica (es-ES)"
+          - option "Nora (nb-NO)"
+          - option "Organ (en-US)"
+          - option "Paulina (es-MX)"
+          - option "Piya (bn-IN)"
+          - option "Ralph (en-US)"
+          - option "Reed (English (United Kingdom)) (en-GB)"
+          - option "Reed (English (United States)) (en-US)"
+          - option "Reed (Chinese (China mainland)) (zh-CN)"
+          - option "Reed (Chinese (Taiwan)) (zh-TW)"
+          - option "Reed (German (Germany)) (de-DE)"
+          - option "Reed (Spanish (Spain)) (es-ES)"
+          - option "Reed (Spanish (Mexico)) (es-MX)"
+          - option "Reed (Finnish (Finland)) (fi-FI)"
+          - option "Reed (French (Canada)) (fr-CA)"
+          - option "Reed (Italian (Italy)) (it-IT)"
+          - option "Reed (Japanese (Japan)) (ja-JP)"
+          - option "Reed (Korean (South Korea)) (ko-KR)"
+          - option "Reed (Portuguese (Brazil)) (pt-BR)"
+          - option "Rocko (English (United Kingdom)) (en-GB)"
+          - option "Rocko (English (United States)) (en-US)"
+          - option "Rocko (Chinese (China mainland)) (zh-CN)"
+          - option "Rocko (Chinese (Taiwan)) (zh-TW)"
+          - option "Rocko (German (Germany)) (de-DE)"
+          - option "Rocko (Spanish (Spain)) (es-ES)"
+          - option "Rocko (Spanish (Mexico)) (es-MX)"
+          - option "Rocko (Finnish (Finland)) (fi-FI)"
+          - option "Rocko (French (Canada)) (fr-CA)"
+          - option "Rocko (French (France)) (fr-FR)"
+          - option "Rocko (Italian (Italy)) (it-IT)"
+          - option "Rocko (Japanese (Japan)) (ja-JP)"
+          - option "Rocko (Korean (South Korea)) (ko-KR)"
+          - option "Rocko (Portuguese (Brazil)) (pt-BR)"
+          - option "Samantha (en-US)"
+          - option "Sandy (English (United Kingdom)) (en-GB)"
+          - option "Sandy (English (United States)) (en-US)"
+          - option "Sandy (Chinese (China mainland)) (zh-CN)"
+          - option "Sandy (Chinese (Taiwan)) (zh-TW)"
+          - option "Sandy (German (Germany)) (de-DE)"
+          - option "Sandy (Spanish (Spain)) (es-ES)"
+          - option "Sandy (Spanish (Mexico)) (es-MX)"
+          - option "Sandy (Finnish (Finland)) (fi-FI)"
+          - option "Sandy (French (Canada)) (fr-CA)"
+          - option "Sandy (French (France)) (fr-FR)"
+          - option "Sandy (Italian (Italy)) (it-IT)"
+          - option "Sandy (Japanese (Japan)) (ja-JP)"
+          - option "Sandy (Korean (South Korea)) (ko-KR)"
+          - option "Sandy (Portuguese (Brazil)) (pt-BR)"
+          - option "Sara (da-DK)"
+          - option "Satu (fi-FI)"
+          - option "Shelley (English (United Kingdom)) (en-GB)"
+          - option "Shelley (English (United States)) (en-US)"
+          - option "Shelley (Chinese (China mainland)) (zh-CN)"
+          - option "Shelley (Chinese (Taiwan)) (zh-TW)"
+          - option "Shelley (German (Germany)) (de-DE)"
+          - option "Shelley (Spanish (Spain)) (es-ES)"
+          - option "Shelley (Spanish (Mexico)) (es-MX)"
+          - option "Shelley (Finnish (Finland)) (fi-FI)"
+          - option "Shelley (French (Canada)) (fr-CA)"
+          - option "Shelley (French (France)) (fr-FR)"
+          - option "Shelley (Italian (Italy)) (it-IT)"
+          - option "Shelley (Japanese (Japan)) (ja-JP)"
+          - option "Shelley (Korean (South Korea)) (ko-KR)"
+          - option "Shelley (Portuguese (Brazil)) (pt-BR)"
+          - option "Sinji (yue-HK)"
+          - option "Soumya (kn-IN)"
+          - option "Superstar (en-US)"
+          - option "Tessa (en-ZA)"
+          - option "Thomas (fr-FR)"
+          - option "Tina (sl-SI)"
+          - option "Tingting (zh-CN)"
+          - option "Trinoids (en-US)"
+          - option "Tünde (hu-HU)"
+          - option "Vani (ta-IN)"
+          - option "Whisper (en-US)"
+          - option "Wobble (en-US)"
+          - option "Xander (nl-NL)"
+          - option "Yelda (tr-TR)"
+          - option "Yuna (ko-KR)"
+          - option "Zarvox (en-US)"
+          - option "Zosia (pl-PL)"
+          - option "Zuzana (cs-CZ)"
+      - generic [ref=e176]:
+        - generic [ref=e177]:
+          - text: Speed
+          - generic [ref=e178]: 2.0×
+        - slider [ref=e179]: "2"
+    - separator [ref=e180]
+    - heading "Reading aids" [level=3] [ref=e181]
+  - contentinfo [ref=e186]:
+    - button "Previous chapter" [ref=e187] [cursor=pointer]:
+      - img [ref=e188]
+    - button "Back 10s" [ref=e190] [cursor=pointer]:
+      - img [ref=e191]
+    - button "Play / pause" [ref=e193] [cursor=pointer]:
+      - img [ref=e194]
+    - button "Forward 10s" [ref=e196] [cursor=pointer]:
+      - img [ref=e197]
+    - button "Next chapter" [ref=e199] [cursor=pointer]:
+      - img [ref=e200]
+    - generic [ref=e202]:
+      - generic [ref=e203]: 1/2 · Chapter 1
+      - slider [ref=e204]: "175"
+    - generic [ref=e205]: 0:01 / 0:10
+    - combobox "Speed" [ref=e206]:
+      - option "0.25×"
+      - option "0.5×"
+      - option "0.75×"
+      - option "1×" [selected]
+      - option "1.25×"
+      - option "1.5×"
+      - option "1.75×"
+      - option "2×"
+      - option "3×"
+      - option "4×"
+      - option "5×"
+    - button "Stop" [ref=e207] [cursor=pointer]:
+      - img [ref=e208]

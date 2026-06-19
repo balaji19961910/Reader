@@ -20,6 +20,7 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
 
 ## Features
 
+### Reading
 - **Multi-format rendering** via foliate-js — **EPUB** (2 & 3), **MOBI / AZW3**,
   **FB2 / FBZ**, **CBZ**, **PDF** (experimental)
 - **Scroll view _and_ page view** — live toggle (no re-render)
@@ -27,19 +28,34 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
 - **Resume** — reopens to the exact last position per book (survives refresh/close);
   **auto-restores the last book** on launch
 - **Contents panel** — **Chapters** (jump to any), **Bookmarks**, and **Highlights**
+- **Search** — find in the **current chapter** or the **whole book**, with highlighted
+  excerpts; tap a result to jump
+- **Go to** — jump by **percentage**, or by **page number** if the book has a page list
 - **Bookmarks** — bookmark the current page; jump to / delete from the panel
 - **Highlights & notes** — select text → colour highlight (yellow/green/blue/pink),
   add a note, or copy; highlights persist and redraw on reopen
+
+### Listening
 - **Read aloud (TTS)** — play / pause / **stop**; starts from your **selection** (or the
-  first word of the current view); word-by-word highlight + auto-scroll; voice + speed settings
-- **Themes** — light, sepia, dark, OLED-black
-- **Typography** — font family, size, line spacing, **4 independent margins**
-  (top/right/bottom/left); trailing space in scroll mode so the end isn't glued to the edge
-- **Bundled reading fonts** — Literata, Atkinson Hyperlegible, OpenDyslexic
-  (OFL, inlined so they work offline inside the book)
+  first word of the current view); word-by-word highlight + auto-scroll; voice + speed.
+  Uses **Web Speech** on desktop/iOS and the **native Android TextToSpeech** engine on Android
+- **Audiobook** — import per-chapter audio (M4B/MP3/…) via **folder** (desktop) or
+  multi-select (mobile); tracks map to chapters in order and the **text follows the audio**
+- **Unified player bar** (TTS + audiobook) — progress bar, **⏪ 10s / 10s ⏩**,
+  **speed 0.25×–5×**, and chapter skip; the ▶ button chooses Text-to-speech or Audiobook
+
+### Appearance
+- **Themes** — Light, Paper, Sepia, Gray, Dark, Nord, Solarized Dark, OLED Black
+- **Typography** — font family, size, line spacing, **text alignment** (left/center/right/
+  justify), **hyphenation**, and **4 independent margins** (top/right/bottom/left); trailing
+  space in scroll mode so the end isn't glued to the edge
+- **Bundled reading fonts** (OFL, inlined for offline use) — Literata, Bitter, Lora,
+  Merriweather, Inter, Atkinson Hyperlegible, OpenDyslexic
 - **Immersive view** — auto-hiding bars that float over the content (no reflow),
   with an "always show header" option
 - **Keep screen awake** while reading (prevents the OS auto-dim / sleep)
+
+### Platform & system
 - **File associations** — "Open with Reader" for `.epub`, `.mobi`, `.azw3`, `.fb2`, `.cbz`,
   `.pdf` (macOS, Windows, Linux, Android; iOS Document Types)
 - **Float over other apps** — always-on-top + focus-based opacity (desktop) /
@@ -50,9 +66,11 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
   is toggleable
 
 ### Notes / known limits
-- **TTS word highlight** relies on the speech engine emitting `onboundary` events — solid on
-  macOS/WKWebView and most Android voices; a few voices don't, in which case speech still
-  works without per-word highlight.
+- **TTS word highlight** needs the speech engine to report word boundaries — `onboundary`
+  on desktop/iOS, `onRangeStart` (Android 8+) on Android. A few voices don't report them, in
+  which case speech still works without per-word highlight.
+- **Audiobook sync is chapter-level** — plain audio files carry no per-word timing, so there's
+  no read-along word highlight for audiobooks (that needs an EPUB3 media-overlay book).
 - **File associations** are configured once in
   [`tauri.conf.json`](src-tauri/tauri.conf.json) (`bundle.fileAssociations`); Tauri registers
   them per-platform at build time. Re-install the app after building for the OS to pick them up.

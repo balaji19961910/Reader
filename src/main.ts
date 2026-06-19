@@ -1,11 +1,13 @@
 import { makeBook } from "./foliate-js/view.js"; // also registers <foliate-view>
 import { Overlayer } from "./foliate-js/overlayer.js";
+import { unzipSync, zipSync, strFromU8, strToU8 } from "fflate";
 import { fontFaceCSS, familyFor, isBundled } from "./fonts";
 import {
   Annotation,
   BookRecord,
   Bookmark,
   Settings,
+  deleteAudio,
   deleteBook,
   getAudioBlob,
   getAudioTracks,
@@ -63,6 +65,7 @@ const fileInput = $<HTMLInputElement>("#file-input");
 const tocEl = $("#toc");
 const tocList = $("#toc-list");
 const searchEl = $("#search");
+const detailsEl = $("#details");
 const PLATFORM = platform();
 
 // ---- State ----
@@ -491,8 +494,6 @@ function setTtsButton() {
   const b = $("#btn-tts");
   b.innerHTML = ttsPlaying ? ICON_PAUSE : ICON_PLAY;
   b.classList.toggle("on", ttsActive);
-  // the stop button only shows while a read-aloud session is active
-  $("#btn-tts-stop").style.display = ttsActive ? "" : "none";
   updatePlayPauseIcon();
 }
 
@@ -655,6 +656,11 @@ async function startTTS() {
   showPlayer("tts");
   setTtsButton();
   applyVolumeNative(); // release volume keys so they control speech loudness
+  // keep an OS media session alive so headphone buttons reach us during TTS
+  ensureSilence();
+  ttsSilence.play().catch(() => {});
+  setMediaMetadata("Read aloud");
+  setMediaState(true);
 
   // Start from the selection if any, else from the first word of the current
   // view, else from the section start.
@@ -710,6 +716,9 @@ function pauseResumeTTS() {
       ttsPlaying = true;
     }
   }
+  if (ttsPlaying) ttsSilence.play().catch(() => {});
+  else ttsSilence.pause();
+  setMediaState(ttsPlaying);
   setTtsButton();
 }
 
@@ -728,6 +737,8 @@ function stopTTS() {
   ttsActive = false;
   ttsPlaying = false;
   clearTtsHighlight();
+  ttsSilence.pause();
+  setMediaState(false);
   setTtsButton();
   applyVolumeNative();
   if (wasActive) hidePlayer();
@@ -755,16 +766,10 @@ function updatePlayPauseIcon() {
 function showPlayer(mode: "tts" | "audio") {
   playerMode = mode;
   $("#player-bar").hidden = false;
-  // chapter skip buttons only make sense for multi-file audiobooks
-  const showCh = mode === "audio" && audioNames.length > 1;
-  $("#pb-prev").style.display = showCh ? "" : "none";
-  $("#pb-next").style.display = showCh ? "" : "none";
-  $<HTMLSelectElement>("#pb-speed").value = String(
-    mode === "audio" ? audioRate : settings.ttsRate,
-  );
+  $("#pb-speed-btn").textContent = (mode === "audio" ? audioRate : settings.ttsRate) + "×";
   if (mode === "tts") {
-    $("#pb-title").textContent = "Read aloud";
-    $("#pb-time").textContent = "";
+    $("#pb-cur").textContent = "0%";
+    $("#pb-dur").textContent = "";
   }
   updatePlayPauseIcon();
 }
@@ -785,20 +790,11 @@ let audioActive = false;
 let audioUrl: string | null = null;
 let audioSaveTimer: number | undefined;
 let audioRate = parseFloat(localStorage.getItem("audioRate") || "1") || 1;
+let audioImportTarget: "play" | "details" = "play"; // where an audio import goes
 
 // top-level chapters used for the track↔chapter mapping
 function tocTop(): any[] {
   return view?.book?.toc ?? [];
-}
-
-function updateAudioTitle() {
-  const toc = tocTop();
-  const label =
-    toc.length === audioNames.length && toc[audioTrack]?.label
-      ? toc[audioTrack].label.trim()
-      : audioNames[audioTrack] || "—";
-  $("#pb-title").textContent =
-    audioNames.length > 1 ? `${audioTrack + 1}/${audioNames.length} · ${label}` : label;
 }
 
 // move the text to the chapter matching the playing track (when 1:1)
@@ -811,24 +807,32 @@ function syncTextToTrack(i: number) {
 
 const AUDIO_RE = /\.(m4b|m4a|mp4|mp3|aac|ogg|oga|opus|wav|flac)$/i;
 
-async function importAudio(files: File[]) {
-  if (!currentId) return;
+// Store audio files for a book (ordered by name). Returns the track names.
+async function storeAudio(bookId: string, files: File[]): Promise<string[] | null> {
   // a folder import may include covers/metadata — keep only audio
   const audio = files.filter(
     (f) => AUDIO_RE.test(f.name) || f.type.startsWith("audio/"),
   );
   if (!audio.length) {
     alert("No audio files found.");
-    return;
+    return null;
   }
   const key = (f: File) => (f as any).webkitRelativePath || f.name;
   const sorted = audio.sort((a, b) =>
     key(a).localeCompare(key(b), undefined, { numeric: true }),
   );
-  audioNames = sorted.map((f) => f.name);
-  await setAudioTracks(currentId, audioNames);
-  for (let i = 0; i < sorted.length; i++) await setAudioBlob(currentId, i, sorted[i]);
-  saveAudioPos(currentId, { track: 0, time: 0 });
+  const names = sorted.map((f) => f.name);
+  await setAudioTracks(bookId, names);
+  for (let i = 0; i < sorted.length; i++) await setAudioBlob(bookId, i, sorted[i]);
+  saveAudioPos(bookId, { track: 0, time: 0 });
+  return names;
+}
+
+async function importAudio(files: File[]) {
+  if (!currentId) return;
+  const names = await storeAudio(currentId, files);
+  if (!names) return;
+  audioNames = names;
   openAudiobook();
 }
 
@@ -845,8 +849,13 @@ async function playTrack(i: number, time = 0, autoplay = true) {
   audioUrl = URL.createObjectURL(blob);
   audioEl.src = audioUrl;
   audioEl.playbackRate = audioRate;
-  updateAudioTitle();
   syncTextToTrack(i);
+  const toc = tocTop();
+  const label =
+    toc.length === audioNames.length && toc[i]?.label
+      ? toc[i].label.trim()
+      : audioNames[i] || "Audiobook";
+  setMediaMetadata(audioNames.length > 1 ? `${i + 1}. ${label}` : label);
   const begin = () => {
     try {
       if (time) audioEl.currentTime = time;
@@ -899,7 +908,8 @@ function wireAudio() {
         Math.round((audioEl.currentTime / d) * 1000),
       );
     }
-    $("#pb-time").textContent = `${fmtTime(audioEl.currentTime)} / ${fmtTime(d)}`;
+    $("#pb-cur").textContent = fmtTime(audioEl.currentTime);
+    $("#pb-dur").textContent = fmtTime(d);
     window.clearTimeout(audioSaveTimer);
     audioSaveTimer = window.setTimeout(persistAudioPos, 1000);
   });
@@ -908,7 +918,19 @@ function wireAudio() {
     const input = e.target as HTMLInputElement;
     const files = [...(input.files || [])];
     input.value = "";
-    if (files.length) await importAudio(files);
+    if (!files.length) return;
+    if (audioImportTarget === "details" && detailsId) {
+      const id = detailsId;
+      const names = await storeAudio(id, files);
+      audioImportTarget = "play";
+      if (names) {
+        if (id === currentId) audioNames = names;
+        const rec = await getBook(id);
+        if (rec) openDetails(rec); // refresh the details page
+      }
+    } else {
+      await importAudio(files);
+    }
   };
   $<HTMLInputElement>("#audio-input").addEventListener("change", onAudioFiles);
   $<HTMLInputElement>("#audio-folder-input").addEventListener("change", onAudioFiles);
@@ -942,25 +964,121 @@ async function ttsSeekFraction(frac: number) {
   }
 }
 
+// --- player actions (shared by the on-screen bar AND the Media Session) ---
+function playerTogglePlay() {
+  if (playerMode === "tts") pauseResumeTTS();
+  else if (playerMode === "audio")
+    audioEl.paused ? audioEl.play().catch(() => {}) : audioEl.pause();
+  updatePlayPauseIcon();
+}
+function playerBack() {
+  if (playerMode === "audio") audioEl.currentTime = Math.max(0, audioEl.currentTime - 10);
+  else if (playerMode === "tts") ttsSkip(-1);
+}
+function playerFwd() {
+  if (playerMode === "audio")
+    audioEl.currentTime = Math.min(audioEl.duration || 0, audioEl.currentTime + 10);
+  else if (playerMode === "tts") ttsSkip(1);
+}
+function playerPrev() {
+  if (playerMode === "audio") playTrack(audioTrack - 1);
+  else if (playerMode === "tts") ttsSkip(-1);
+}
+function playerNext() {
+  if (playerMode === "audio") playTrack(audioTrack + 1);
+  else if (playerMode === "tts") ttsSkip(1);
+}
+function playerStop() {
+  if (playerMode === "tts") stopTTS();
+  else {
+    persistAudioPos();
+    stopAudio();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Media Session — lets headphone / lock-screen / Bluetooth buttons control us
+// ---------------------------------------------------------------------------
+
+const ttsSilence = $<HTMLAudioElement>("#tts-silence");
+let silenceReady = false;
+
+// a looping silent track keeps the OS media session alive while TTS speaks
+function ensureSilence() {
+  if (silenceReady) return;
+  const rate = 8000;
+  const n = rate; // 1 second
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+  };
+  str(0, "RIFF");
+  v.setUint32(4, 36 + n * 2, true);
+  str(8, "WAVE");
+  str(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  str(36, "data");
+  v.setUint32(40, n * 2, true);
+  ttsSilence.src = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  silenceReady = true;
+}
+
+function setMediaState(playing: boolean) {
+  if ("mediaSession" in navigator) {
+    try {
+      navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function setMediaMetadata(chapter: string) {
+  if (!("mediaSession" in navigator) || typeof MediaMetadata === "undefined") return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: chapter,
+      album: bookTitleEl.textContent || "Reader",
+      artist: "Reader",
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+function setupMediaSession() {
+  if (!("mediaSession" in navigator)) return;
+  const ms = navigator.mediaSession;
+  const set = (a: MediaSessionAction, fn: () => void) => {
+    try {
+      ms.setActionHandler(a, fn);
+    } catch {
+      /* unsupported action */
+    }
+  };
+  set("play", playerTogglePlay);
+  set("pause", playerTogglePlay);
+  set("stop", playerStop);
+  set("seekbackward", playerBack);
+  set("seekforward", playerFwd);
+  set("previoustrack", playerPrev);
+  set("nexttrack", playerNext);
+}
+
 function wirePlayer() {
   wireAudio();
-  $("#pb-play").addEventListener("click", () => {
-    if (playerMode === "tts") pauseResumeTTS();
-    else if (playerMode === "audio")
-      audioEl.paused ? audioEl.play().catch(() => {}) : audioEl.pause();
-    updatePlayPauseIcon();
-  });
-  $("#pb-back").addEventListener("click", () => {
-    if (playerMode === "audio") audioEl.currentTime = Math.max(0, audioEl.currentTime - 10);
-    else if (playerMode === "tts") ttsSkip(-1);
-  });
-  $("#pb-fwd").addEventListener("click", () => {
-    if (playerMode === "audio")
-      audioEl.currentTime = Math.min(audioEl.duration || 0, audioEl.currentTime + 10);
-    else if (playerMode === "tts") ttsSkip(1);
-  });
-  $("#pb-prev").addEventListener("click", () => playTrack(audioTrack - 1));
-  $("#pb-next").addEventListener("click", () => playTrack(audioTrack + 1));
+  setupMediaSession();
+  $("#pb-play").addEventListener("click", playerTogglePlay);
+  $("#pb-back").addEventListener("click", playerBack);
+  $("#pb-fwd").addEventListener("click", playerFwd);
+  $("#pb-stop").addEventListener("click", playerStop);
   $<HTMLInputElement>("#pb-seek").addEventListener("input", (e) => {
     const frac = Number((e.target as HTMLInputElement).value) / 1000;
     if (playerMode === "audio") {
@@ -970,29 +1088,45 @@ function wirePlayer() {
       ttsSeekFraction(frac);
     }
   });
-  $<HTMLSelectElement>("#pb-speed").addEventListener("change", (e) => {
-    const v = parseFloat((e.target as HTMLSelectElement).value) || 1;
-    if (playerMode === "audio") {
-      audioRate = v;
-      audioEl.playbackRate = v;
-      localStorage.setItem("audioRate", String(v));
-    } else if (playerMode === "tts") {
-      settings.ttsRate = v;
-      commit();
-      // apply immediately by re-speaking the current block
-      if (ttsPlaying && view?.tts) {
-        cancelSpeech();
-        speakSSML(view.tts.resume());
-      }
-    }
+
+  // compact speed: a pill that opens a small speed menu
+  $("#pb-speed-btn").addEventListener("click", openSpeedMenu);
+  document.querySelectorAll<HTMLElement>("#speed-menu button").forEach((b) =>
+    b.addEventListener("click", () => setSpeed(parseFloat(b.dataset.rate || "1") || 1)),
+  );
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target as HTMLElement;
+    if (!t.closest?.("#speed-menu") && !t.closest?.("#pb-speed-btn")) closeSpeedMenu();
   });
-  $("#pb-close").addEventListener("click", () => {
-    if (playerMode === "tts") stopTTS();
-    else {
-      persistAudioPos();
-      stopAudio();
+}
+
+function setSpeed(v: number) {
+  if (playerMode === "audio") {
+    audioRate = v;
+    audioEl.playbackRate = v;
+    localStorage.setItem("audioRate", String(v));
+  } else if (playerMode === "tts") {
+    settings.ttsRate = v;
+    commit();
+    if (ttsPlaying && view?.tts) {
+      cancelSpeech();
+      speakSSML(view.tts.resume());
     }
-  });
+  }
+  $("#pb-speed-btn").textContent = v + "×";
+  closeSpeedMenu();
+}
+
+function openSpeedMenu() {
+  const m = $("#speed-menu");
+  const r = $("#pb-speed-btn").getBoundingClientRect();
+  m.hidden = false;
+  // anchor above the pill (bar is at the bottom of the screen)
+  m.style.bottom = window.innerHeight - r.top + 6 + "px";
+  m.style.right = window.innerWidth - r.right + "px";
+}
+function closeSpeedMenu() {
+  $("#speed-menu").hidden = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,7 +1299,7 @@ async function openBook(record: BookRecord) {
     if (playerMode === "tts") {
       const f = fraction ?? 0;
       $<HTMLInputElement>("#pb-seek").value = String(Math.round(f * 1000));
-      $("#pb-time").textContent = Math.round(f * 100) + "%";
+      $("#pb-cur").textContent = Math.round(f * 100) + "%";
     }
   });
 
@@ -1367,9 +1501,14 @@ async function refreshLibrary() {
         <div class="a">${escapeHtml(b.author)}</div>
         <div class="bar"><span style="width:${Math.round((b.progress ?? 0) * 100)}%"></span></div>
       </div>
+      <button class="info" title="Details"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg></button>
       <button class="del" title="Remove"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>`;
     card.querySelector(".cover")!.addEventListener("click", () => openBook(b));
     card.querySelector(".meta")!.addEventListener("click", () => openBook(b));
+    card.querySelector(".info")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDetails(b);
+    });
     card.querySelector(".del")!.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (confirm(`Remove “${b.title}” from library?`)) {
@@ -1388,10 +1527,313 @@ function escapeHtml(s: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Book details page (metadata, chapters, audiobook linking)
+// ---------------------------------------------------------------------------
+
+let detailsId: string | null = null;
+
+interface ChapterStat {
+  label: string;
+  href: string;
+  chars: number;
+  pages: number;
+  startPage: number;
+  endPage: number;
+}
+interface BookStats {
+  totalChars: number;
+  totalWords: number;
+  totalPages: number;
+  chapters: ChapterStat[];
+}
+
+// Estimate characters per "page" for the CURRENT layout (viewport, font, margins).
+function charsPerPage(): number {
+  const w = (viewer.clientWidth || 700) - settings.marginLeft - settings.marginRight;
+  const h = (viewer.clientHeight || 900) - settings.marginTop - settings.marginBottom;
+  const fontPx = 16 * (settings.fontSize / 100);
+  const charsPerLine = Math.max(8, w / (fontPx * 0.5)); // ~0.5em per glyph
+  const linesPerPage = Math.max(4, h / (fontPx * settings.lineHeight));
+  return Math.max(200, Math.round(charsPerLine * linesPerPage));
+}
+
+// Read every section's text to count words/chars and paginate per chapter.
+async function computeDetails(book: any, toc: any[]): Promise<BookStats> {
+  const sections: any[] = book.sections || [];
+  const secChars = new Array(sections.length).fill(0);
+  let totalChars = 0;
+  let totalWords = 0;
+  for (let i = 0; i < sections.length; i++) {
+    let text = "";
+    try {
+      const doc = await sections[i].createDocument?.();
+      text = doc?.body?.textContent || "";
+    } catch {
+      /* ignore */
+    }
+    const clean = text.replace(/\s+/g, " ").trim();
+    secChars[i] = clean.length;
+    totalChars += clean.length;
+    totalWords += clean ? clean.split(" ").length : 0;
+  }
+
+  const cpp = charsPerPage();
+  const idx = toc.map((c) => {
+    try {
+      return book.resolveHref?.(c.href)?.index ?? -1;
+    } catch {
+      return -1;
+    }
+  });
+
+  let running = 0;
+  const chapters: ChapterStat[] = toc.map((c, i) => {
+    let start = idx[i];
+    if (start == null || start < 0) start = i > 0 ? running && 0 : 0; // fallback
+    if (start < 0) start = 0;
+    let endExclusive = sections.length;
+    for (let j = i + 1; j < toc.length; j++) {
+      if (idx[j] >= 0) {
+        endExclusive = idx[j];
+        break;
+      }
+    }
+    let chars = 0;
+    for (let s = start; s < endExclusive; s++) chars += secChars[s] || 0;
+    const pages = Math.max(1, Math.ceil(chars / cpp));
+    const startPage = running + 1;
+    const endPage = running + pages;
+    running = endPage;
+    return { label: c.label, href: c.href, chars, pages, startPage, endPage };
+  });
+
+  const totalPages = running || Math.max(1, Math.ceil(totalChars / cpp));
+  return { totalChars, totalWords, totalPages, chapters };
+}
+
+async function openDetails(rec: BookRecord) {
+  detailsId = rec.id;
+  openOverlay(detailsEl);
+  const body = $("#details-body");
+  body.innerHTML = `<p class="hint">Analysing book…</p>`;
+  let meta: any = {};
+  let stats: BookStats = { totalChars: 0, totalWords: 0, totalPages: 0, chapters: [] };
+  try {
+    const book: any = await makeBook(
+      new File([rec.data], rec.fileName || rec.title || "book"),
+    );
+    meta = book.metadata || {};
+    stats = await computeDetails(book, book.toc || []);
+    book.destroy?.();
+  } catch (e) {
+    console.error(e);
+  }
+  if (detailsId !== rec.id) return; // user navigated away while analysing
+  const tracks = await getAudioTracks(rec.id);
+  renderDetails(rec, meta, stats, tracks);
+}
+
+function chaptersHtml(chapters: ChapterStat[], tracks: string[], mapped: boolean): string {
+  if (!chapters.length) return `<p class="hint">No chapter list.</p>`;
+  return chapters
+    .map(
+      (c, i) => `
+      <button class="d-chapter" data-href="${escapeHtml(c.href || "")}">
+        <span class="d-ch-title">${i + 1}. ${escapeHtml((c.label || "").trim() || "—")}</span>
+        <span class="d-ch-sub">p. ${c.startPage}–${c.endPage} · ${c.pages} page${
+          c.pages > 1 ? "s" : ""
+        }${mapped ? ` · 🎧 ${escapeHtml(tracks[i])}` : ""}</span>
+      </button>`,
+    )
+    .join("");
+}
+
+function renderDetails(
+  rec: BookRecord,
+  meta: any,
+  stats: BookStats,
+  tracks: string[],
+) {
+  const title = formatLangMap(meta.title) || rec.title;
+  const author = formatContributor(meta.author) || rec.author;
+  const lang = formatLangMap(meta.language) || "—";
+  const publisher = formatLangMap(meta.publisher) || "—";
+  const ext = (rec.fileName.split(".").pop() || "").toUpperCase();
+  const size = (rec.data.byteLength / 1048576).toFixed(1) + " MB";
+  const nChapters = stats.chapters.length;
+  const mapped = tracks.length > 0 && tracks.length === nChapters;
+  const num = (n: number) => n.toLocaleString();
+
+  const audioStatus = !tracks.length
+    ? "No audiobook linked."
+    : mapped
+      ? `${tracks.length} files · auto-mapped to chapters`
+      : tracks.length === 1
+        ? "1 file · plays as one track (whole book)"
+        : `${tracks.length} files · ${nChapters} chapters (no 1:1 map — plays in order)`;
+
+  $("#details-body").innerHTML = `
+    <div class="d-head">
+      <div class="d-cover">${
+        rec.cover ? `<img src="${rec.cover}" alt="" />` : escapeHtml(title)
+      }</div>
+      <div class="d-headmeta">
+        <div class="d-title">${escapeHtml(title)}</div>
+        <div class="d-author">${escapeHtml(author)}</div>
+        <div class="d-prog">${Math.round((rec.progress ?? 0) * 100)}% read</div>
+      </div>
+    </div>
+
+    <button id="d-edit" class="open-btn ghost d-edit-btn">✎ Edit title / author</button>
+
+    <div class="d-rows">
+      <div><span>Format</span><b>${ext}</b></div>
+      <div><span>Size</span><b>${size}</b></div>
+      <div><span>Language</span><b>${escapeHtml(lang)}</b></div>
+      <div><span>Publisher</span><b>${escapeHtml(publisher)}</b></div>
+      <div><span>Chapters</span><b>${nChapters}</b></div>
+      <div><span>Pages</span><b>${num(stats.totalPages)}</b></div>
+      <div><span>Words</span><b>${num(stats.totalWords)}</b></div>
+      <div><span>Characters</span><b>${num(stats.totalChars)}</b></div>
+    </div>
+    <p class="d-note">Page counts are estimated for your current font size & margins.</p>
+
+    <h3 class="group mark-head">Audiobook</h3>
+    <p class="d-note">${audioStatus}</p>
+    ${
+      tracks.length
+        ? `<button id="d-remove-audio" class="open-btn danger">Remove audiobook</button>`
+        : `<button id="d-add-audio" class="open-btn">+ Link audiobook ${
+            PLATFORM === "desktop" || PLATFORM === "web" ? "folder" : "files"
+          }</button>`
+    }
+
+    <h3 class="group mark-head">Chapters</h3>
+    <div class="d-chapters">${chaptersHtml(stats.chapters, tracks, mapped)}</div>
+  `;
+
+  const body = $("#details-body");
+  body.querySelector("#d-edit")?.addEventListener("click", () =>
+    renderEditMeta(rec, title, author),
+  );
+  body.querySelector("#d-add-audio")?.addEventListener("click", () => {
+    audioImportTarget = "details";
+    if (PLATFORM === "desktop" || PLATFORM === "web") $("#audio-folder-input").click();
+    else $("#audio-input").click();
+  });
+  body.querySelector("#d-remove-audio")?.addEventListener("click", async () => {
+    if (!confirm("Remove the linked audiobook?")) return;
+    await deleteAudio(rec.id);
+    if (rec.id === currentId) {
+      audioNames = [];
+      stopAudio();
+    }
+    openDetails(rec);
+  });
+  body.querySelectorAll<HTMLElement>(".d-chapter").forEach((el) =>
+    el.addEventListener("click", async () => {
+      const href = el.dataset.href;
+      await openBook(rec);
+      if (href) window.setTimeout(() => view?.goTo(href).catch(() => {}), 150);
+    }),
+  );
+}
+
+// ---- metadata editor (in-app override + write into the EPUB file) ----
+function renderEditMeta(rec: BookRecord, title: string, author: string) {
+  const isEpub = (rec.fileName.split(".").pop() || "").toLowerCase() === "epub";
+  $("#details-body").innerHTML = `
+    <div class="d-edit">
+      <label>Title</label>
+      <input id="ed-title" class="search-input" value="${escapeHtml(title)}" />
+      <label>Author</label>
+      <input id="ed-author" class="search-input" value="${escapeHtml(author)}" />
+      <p class="d-note">${
+        isEpub
+          ? "Saved in the app and written into the EPUB file."
+          : "Saved in the app (this format can't be rewritten in-file)."
+      }</p>
+      <div class="d-edit-actions">
+        <button id="ed-cancel" class="open-btn ghost">Cancel</button>
+        <button id="ed-save" class="open-btn">Save</button>
+      </div>
+    </div>`;
+  $("#ed-cancel").addEventListener("click", () => openDetails(rec));
+  $("#ed-save").addEventListener("click", async () => {
+    const t = $<HTMLInputElement>("#ed-title").value.trim();
+    const a = $<HTMLInputElement>("#ed-author").value.trim();
+    await saveMeta(rec, t, a, isEpub);
+  });
+}
+
+async function saveMeta(rec: BookRecord, title: string, author: string, isEpub: boolean) {
+  rec.title = title || rec.title;
+  rec.author = author || rec.author;
+  if (isEpub) {
+    try {
+      rec.data = editEpubMetadata(rec.data, title, author);
+    } catch (e) {
+      console.error(e);
+      alert("Couldn't write into the EPUB file — saved in the app only.");
+    }
+  }
+  await saveBook(rec);
+  await refreshLibrary();
+  openDetails(rec);
+}
+
+// Find the OPF path from META-INF/container.xml (fallback: first .opf).
+function opfPath(files: Record<string, Uint8Array>): string | null {
+  const container = files["META-INF/container.xml"];
+  if (container) {
+    try {
+      const xml = new DOMParser().parseFromString(strFromU8(container), "application/xml");
+      const p = xml.querySelector("rootfile")?.getAttribute("full-path");
+      if (p) return p;
+    } catch {
+      /* ignore */
+    }
+  }
+  return Object.keys(files).find((k) => k.toLowerCase().endsWith(".opf")) || null;
+}
+
+// Rewrite dc:title / dc:creator in the EPUB's OPF and repack the zip.
+function editEpubMetadata(bytes: ArrayBuffer, title: string, author: string): ArrayBuffer {
+  const files = unzipSync(new Uint8Array(bytes));
+  const path = opfPath(files);
+  if (!path || !files[path]) throw new Error("OPF not found");
+
+  const DC = "http://purl.org/dc/elements/1.1/";
+  const doc = new DOMParser().parseFromString(strFromU8(files[path]), "application/xml");
+  const metadata = doc.querySelector("metadata");
+  const setDC = (tag: string, val: string) => {
+    if (!val) return;
+    let el = doc.getElementsByTagNameNS(DC, tag)[0] as Element | undefined;
+    if (!el) {
+      el = doc.createElementNS(DC, "dc:" + tag);
+      metadata?.appendChild(el);
+    }
+    el.textContent = val;
+  };
+  setDC("title", title);
+  setDC("creator", author);
+  files[path] = strToU8(new XMLSerializer().serializeToString(doc));
+
+  // repack: mimetype MUST be first and stored (uncompressed)
+  const ordered: Record<string, [Uint8Array, { level: 0 | 8 }]> = {} as any;
+  if (files["mimetype"]) ordered["mimetype"] = [files["mimetype"], { level: 0 }];
+  for (const k of Object.keys(files)) {
+    if (k !== "mimetype") (ordered as any)[k] = [files[k], { level: 8 }];
+  }
+  const out = zipSync(ordered as any);
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+}
+
+// ---------------------------------------------------------------------------
 // Overlays
 // ---------------------------------------------------------------------------
 
-const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl];
+const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl, detailsEl];
 
 function openOverlay(el: HTMLElement) {
   showChrome();
@@ -1659,6 +2101,16 @@ function wireUi() {
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-close-settings").addEventListener("click", closeOverlays);
   $("#btn-close-toc").addEventListener("click", closeOverlays);
+  $("#btn-toc-info").addEventListener("click", async () => {
+    if (!currentId) return;
+    const rec = await getBook(currentId);
+    if (rec) openDetails(rec);
+  });
+  $("#btn-back-details").addEventListener("click", () => {
+    // back to reading if we came from the open book, else to the library
+    if (currentId && detailsId === currentId) closeOverlays();
+    else openLibrary();
+  });
   scrim.addEventListener("click", closeOverlays);
 
   $("#nav-prev").addEventListener("click", () => view?.goLeft());
@@ -1821,7 +2273,6 @@ function wireUi() {
 
   // --- Play (TTS / Audiobook) ---
   $("#btn-tts").addEventListener("click", onPlayButton);
-  $("#btn-tts-stop").addEventListener("click", stopTTS);
   $("#menu-tts").addEventListener("click", () => {
     closePlayMenu();
     startTTS();

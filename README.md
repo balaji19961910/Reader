@@ -34,15 +34,24 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
 - **Bookmarks** — bookmark the current page; jump to / delete from the panel
 - **Highlights & notes** — select text → colour highlight (yellow/green/blue/pink),
   add a note, or copy; highlights persist and redraw on reopen
+- **Book details page** (ⓘ on each library book, or in the reader's Contents panel) — cover,
+  metadata (format, size, language, publisher), **total words / characters / pages**, a chapter
+  list with **per-chapter page ranges** (estimated for your current font size & margins),
+  **editable title/author** (saved in-app, and written into the EPUB file), and
+  **audiobook linking** (see below)
 
 ### Listening
 - **Read aloud (TTS)** — play / pause / **stop**; starts from your **selection** (or the
   first word of the current view); word-by-word highlight + auto-scroll; voice + speed.
   Uses **Web Speech** on desktop/iOS and the **native Android TextToSpeech** engine on Android
-- **Audiobook** — import per-chapter audio (M4B/MP3/…) via **folder** (desktop) or
-  multi-select (mobile); tracks map to chapters in order and the **text follows the audio**
-- **Unified player bar** (TTS + audiobook) — progress bar, **⏪ 10s / 10s ⏩**,
-  **speed 0.25×–5×**, and chapter skip; the ▶ button chooses Text-to-speech or Audiobook
+- **Audiobook** — link per-chapter audio (M4B/MP3/…) from the **book details page** via
+  **folder** (desktop) or multi-select (mobile); tracks **auto-map to chapters in order**
+  and the **text follows the audio**
+- **Unified player bar** (TTS + audiobook) — a 2-line bar: progress (`current | ==== | total`)
+  on top; controls below (**⏪ 10s · play/pause · stop · 10s ⏩** + a compact **speed pill**,
+  0.25×–5×). The ▶ button chooses Text-to-speech or Audiobook
+- **Headphone / lock-screen controls** — hardware & Bluetooth media buttons (play / pause /
+  skip) drive both TTS and the audiobook via the Media Session API
 
 ### Appearance
 - **Themes** — Light, Paper, Sepia, Gray, Dark, Nord, Solarized Dark, OLED Black

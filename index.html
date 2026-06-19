@@ -22,9 +22,6 @@
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 11v6.97l-5-2.14-5 2.14V5h7V3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V11h-2zm4-4h-2v2h-2V7h-2V5h2V3h2v2h2v2z"/></svg>
       </button>
       <button id="btn-tts" class="icon-btn" title="Read aloud"></button>
-      <button id="btn-tts-stop" class="icon-btn" title="Stop read aloud" style="display:none">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
-      </button>
       <button id="btn-library" class="icon-btn" title="Library">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
       </button>
@@ -68,13 +65,30 @@
       </div>
     </section>
 
+    <!-- Book details page -->
+    <section id="details" class="overlay">
+      <div class="overlay-head">
+        <button id="btn-back-details" class="icon-btn" title="Back">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
+        </button>
+        <h2>Book details</h2>
+        <span style="width:40px"></span>
+      </div>
+      <div id="details-body" class="details-body"></div>
+    </section>
+
     <!-- Table of contents (chapters) -->
     <section id="toc" class="overlay panel-left">
       <div class="overlay-head">
         <h2>Contents</h2>
-        <button id="btn-close-toc" class="icon-btn" title="Close">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
+        <div class="head-actions">
+          <button id="btn-toc-info" class="icon-btn" title="Book details">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>
+          </button>
+          <button id="btn-close-toc" class="icon-btn" title="Close">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
       </div>
       <h3 class="group mark-head">Chapters</h3>
       <div id="toc-list" class="toc-list">
@@ -290,44 +304,44 @@
       <button id="menu-audio">🎧 Audiobook</button>
     </div>
 
-    <!-- Unified playback bar (TTS + audiobook) -->
+    <!-- Unified playback bar (TTS + audiobook): progress row + controls row -->
     <footer id="player-bar" hidden>
-      <button id="pb-prev" class="icon-btn" title="Previous chapter">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
-      </button>
-      <button id="pb-back" class="icon-btn" title="Back 10s">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
-      </button>
-      <button id="pb-play" class="icon-btn" title="Play / pause"></button>
-      <button id="pb-fwd" class="icon-btn" title="Forward 10s">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
-      </button>
-      <button id="pb-next" class="icon-btn" title="Next chapter">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-      </button>
-      <div class="audio-mid">
-        <div id="pb-title" class="audio-title">—</div>
+      <div class="pb-progress">
+        <span id="pb-cur" class="pb-t">0:00</span>
         <input id="pb-seek" type="range" min="0" max="1000" value="0" />
+        <span id="pb-dur" class="pb-t">0:00</span>
       </div>
-      <span id="pb-time" class="audio-time">0:00</span>
-      <select id="pb-speed" class="audio-speed" title="Speed">
-        <option value="0.25">0.25×</option>
-        <option value="0.5">0.5×</option>
-        <option value="0.75">0.75×</option>
-        <option value="1" selected>1×</option>
-        <option value="1.25">1.25×</option>
-        <option value="1.5">1.5×</option>
-        <option value="1.75">1.75×</option>
-        <option value="2">2×</option>
-        <option value="3">3×</option>
-        <option value="4">4×</option>
-        <option value="5">5×</option>
-      </select>
-      <button id="pb-close" class="icon-btn" title="Stop">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-      </button>
+      <div class="pb-controls">
+        <button id="pb-back" class="icon-btn" title="Back 10s">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
+        </button>
+        <button id="pb-play" class="icon-btn" title="Play / pause"></button>
+        <button id="pb-stop" class="icon-btn" title="Stop">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+        </button>
+        <button id="pb-fwd" class="icon-btn" title="Forward 10s">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+        </button>
+        <button id="pb-speed-btn" class="pb-speed-btn" title="Playback speed">1×</button>
+      </div>
     </footer>
+
+    <div id="speed-menu" class="play-menu" hidden>
+      <button data-rate="0.25">0.25×</button>
+      <button data-rate="0.5">0.5×</button>
+      <button data-rate="0.75">0.75×</button>
+      <button data-rate="1">1×</button>
+      <button data-rate="1.25">1.25×</button>
+      <button data-rate="1.5">1.5×</button>
+      <button data-rate="1.75">1.75×</button>
+      <button data-rate="2">2×</button>
+      <button data-rate="3">3×</button>
+      <button data-rate="4">4×</button>
+      <button data-rate="5">5×</button>
+    </div>
+
     <audio id="audio-el" preload="metadata"></audio>
+    <audio id="tts-silence" loop></audio>
     <input id="audio-input" type="file" accept="audio/*,.m4b,.m4a,.mp3,.aac" multiple hidden />
     <input id="audio-folder-input" type="file" webkitdirectory multiple hidden />
   </body>

@@ -9,6 +9,7 @@
 #   ./release/release.sh                          # build + copy to the default Drive folder
 #   ./release/release.sh "/path/to/Drive/Folder"  # build + copy to a given folder
 #   ./release/release.sh --no-build "/path/..."    # skip building, just distribute
+#   ./release/release.sh -o                        # also reveal the folder / launch the app when done
 #
 # NOTE: the destination must be a LOCAL folder path (the mounted Google Drive
 #       folder under ~/Library/CloudStorage/...), NOT a drive.google.com link.
@@ -21,12 +22,14 @@ cd "$ROOT"
 # default destination (used when no folder argument is given)
 DEFAULT_DEST="/Users/balaji-9678/Library/CloudStorage/GoogleDrive-balaji19961910@gmail.com/My Drive/ReaderApp"
 
-# --- parse args (flag + optional destination folder, any order) ---
+# --- parse args (flags + optional destination folder, any order) ---
 NO_BUILD=0
+OPEN=0
 DEST=""
 for a in "$@"; do
   case "$a" in
     --no-build) NO_BUILD=1 ;;
+    -o|--open) OPEN=1 ;;
     http://*|https://*)
       echo "✗ That looks like a web link. Pass the LOCAL Drive folder path instead," >&2
       echo "  e.g. \"$DEFAULT_DEST\"" >&2
@@ -74,7 +77,9 @@ echo "✓ Reader.app + Reader.zip → $DEST/"
 rm -rf /Applications/Reader.app && cp -R "$APP" /Applications/
 echo "✓ Reader.app → /Applications/"
 
-# --- 6) reveal ---
-open "$DEST" 2>/dev/null || true
-open /Applications/Reader.app 2>/dev/null || true
+# --- 6) reveal (only with -o / --open) ---
+if [[ "$OPEN" -eq 1 ]]; then
+  open "$DEST" 2>/dev/null || true
+  open /Applications/Reader.app 2>/dev/null || true
+fi
 echo "✅ Done → $DEST"

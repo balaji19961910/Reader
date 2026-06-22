@@ -6,6 +6,7 @@ import {
   Annotation,
   BookRecord,
   Bookmark,
+  HighlightStyle,
   Settings,
   deleteAudio,
   deleteBook,
@@ -68,6 +69,7 @@ const tocEl = $("#toc");
 const tocList = $("#toc-list");
 const searchEl = $("#search");
 const detailsEl = $("#details");
+const helpEl = $("#help");
 const PLATFORM = platform();
 
 // ---- State ----
@@ -456,7 +458,6 @@ let ttsActive = false; // a read-aloud session is ongoing (playing or paused)
 let ttsPlaying = false;
 let voices: SpeechSynthesisVoice[] = [];
 let ttsVoiceObj: SpeechSynthesisVoice | null = null;
-let lastHlWin: any = null;
 let currentMarks: { name: string; pos: number }[] = [];
 let awaitingEnd = false; // guards against stale end events when skipping/seeking
 
@@ -500,19 +501,178 @@ function setTtsButton() {
 }
 
 // Highlight + auto-scroll the spoken word (foliate hands us a DOM Range).
+// TTS highlights are rendered by wrapping the spoken range in styled <span>s
+// (rather than the CSS Custom Highlight API) so font-weight/font-style and the
+// rest of the per-layer styling actually render. Two layers can be shown at
+// once: the sentence is wrapped first, the word nests on top of it.
+let ttsHlSpans: HTMLElement[] = [];
+let lastSpokenRange: Range | null = null;
+
+function hexToRgba(hex: string, opacity: number): string {
+  const h = (hex || "").replace("#", "");
+  const n = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const r = parseInt(n.slice(0, 2), 16) || 0;
+  const g = parseInt(n.slice(2, 4), 16) || 0;
+  const b = parseInt(n.slice(4, 6), 16) || 0;
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(100, opacity)) / 100})`;
+}
+
+// Build the inline CSS (with !important so it wins over the book's own styles).
+function hlStyleCss(s: HighlightStyle): string {
+  const p: string[] = ["border-radius:2px"];
+  if (s.bg) p.push(`background-color:${hexToRgba(s.bg, s.bgOpacity)} !important`);
+  if (s.fg) p.push(`color:${hexToRgba(s.fg, s.fgOpacity)} !important`);
+  p.push(`font-weight:${s.fontWeight} !important`);
+  p.push(`font-style:${s.fontStyle} !important`);
+  const lines: string[] = [];
+  if (s.underline !== "none") lines.push("underline");
+  if (s.strike) lines.push("line-through");
+  if (lines.length) {
+    p.push(`text-decoration-line:${lines.join(" ")} !important`);
+    p.push(`text-decoration-style:${s.underline !== "none" ? s.underline : "solid"} !important`);
+    p.push(`text-decoration-thickness:${s.thickness}px !important`);
+    if (s.fg) p.push(`text-decoration-color:${hexToRgba(s.fg, s.fgOpacity)} !important`);
+  } else {
+    p.push("text-decoration:none !important");
+  }
+  return p.join(";");
+}
+
+function getDocLang(el: Element): string {
+  return (
+    el.closest("[lang]")?.getAttribute("lang") ||
+    el.ownerDocument?.documentElement?.lang ||
+    "en"
+  );
+}
+
+// Wrap every text-node slice inside `range` in a styled span; return the spans.
+function wrapRange(range: Range, css: string, doc: Document): HTMLElement[] {
+  const spans: HTMLElement[] = [];
+  const root =
+    range.commonAncestorContainer.nodeType === 3
+      ? range.commonAncestorContainer.parentNode!
+      : range.commonAncestorContainer;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n as Text;
+    if ((t.nodeValue || "").length && range.intersectsNode(t)) nodes.push(t);
+  }
+  for (const node of nodes) {
+    let start = 0;
+    let end = node.nodeValue!.length;
+    if (node === range.startContainer) start = range.startOffset;
+    if (node === range.endContainer) end = range.endOffset;
+    if (start >= end) continue;
+    let target = node;
+    if (end < target.nodeValue!.length) target.splitText(end);
+    if (start > 0) target = target.splitText(start);
+    const span = doc.createElement("span");
+    span.className = "reader-tts-hl";
+    span.setAttribute("style", css);
+    target.parentNode!.insertBefore(span, target);
+    span.appendChild(target);
+    spans.push(span);
+  }
+  return spans;
+}
+
+// Find the DOM range of the sentence that contains the spoken word.
+function computeSentenceRange(wordRange: Range): Range | null {
+  try {
+    const doc = wordRange.startContainer.ownerDocument!;
+    const startEl =
+      wordRange.startContainer.nodeType === 3
+        ? wordRange.startContainer.parentElement
+        : (wordRange.startContainer as Element);
+    const block =
+      (startEl?.closest?.(
+        "p,li,blockquote,h1,h2,h3,h4,h5,h6,figcaption,dd,dt,td,th,div,section,article",
+      ) as Element) || startEl;
+    if (!block) return null;
+
+    const walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const segs: { node: Text; start: number }[] = [];
+    let text = "";
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const t = n as Text;
+      segs.push({ node: t, start: text.length });
+      text += t.nodeValue || "";
+    }
+    if (!text) return null;
+
+    let wordStart = -1;
+    for (const s of segs)
+      if (s.node === wordRange.startContainer) {
+        wordStart = s.start + wordRange.startOffset;
+        break;
+      }
+    if (wordStart < 0) {
+      const first = segs.find((s) => wordRange.intersectsNode(s.node));
+      if (!first) return null;
+      wordStart = first.start;
+    }
+
+    let gs = 0;
+    let ge = text.length;
+    const Seg: any = (Intl as any).Segmenter;
+    if (Seg) {
+      const seg = new Seg(getDocLang(block), { granularity: "sentence" });
+      for (const part of seg.segment(text)) {
+        const s = part.index;
+        const e = part.index + part.segment.length;
+        if (wordStart >= s && wordStart < e) {
+          gs = s;
+          ge = e;
+          break;
+        }
+      }
+    } else {
+      const re = /[^.!?]*[.!?]+\s*|[^.!?]+$/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text))) {
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (wordStart >= s && wordStart < e) {
+          gs = s;
+          ge = e;
+          break;
+        }
+      }
+    }
+    while (ge > gs && /\s/.test(text[ge - 1])) ge--;
+
+    const locate = (g: number): [Text, number] => {
+      for (const s of segs)
+        if (g <= s.start + s.node.nodeValue!.length) return [s.node, g - s.start];
+      const last = segs[segs.length - 1];
+      return [last.node, last.node.nodeValue!.length];
+    };
+    const [sn, so] = locate(gs);
+    const [en, eo] = locate(ge);
+    const r = doc.createRange();
+    r.setStart(sn, Math.max(0, Math.min(so, sn.nodeValue!.length)));
+    r.setEnd(en, Math.max(0, Math.min(eo, en.nodeValue!.length)));
+    return r;
+  } catch {
+    return null;
+  }
+}
+
 function ttsHighlight(range: Range) {
   try {
+    clearTtsHighlight();
+    lastSpokenRange = range.cloneRange();
     const doc = (range.startContainer as Node)?.ownerDocument;
-    const win: any = doc?.defaultView;
-    if (win?.CSS?.highlights && win.Highlight) {
-      let hl = win.CSS.highlights.get("tts");
-      if (!hl) {
-        hl = new win.Highlight();
-        win.CSS.highlights.set("tts", hl);
-      }
-      hl.clear();
-      hl.add(range);
-      lastHlWin = win;
+    if (!doc) return;
+    // sentence first so the word layer nests on top of it
+    if (settings.ttsSentenceHl) {
+      const sr = computeSentenceRange(range);
+      if (sr) ttsHlSpans.push(...wrapRange(sr, hlStyleCss(settings.ttsSentenceStyle), doc));
+    }
+    if (settings.ttsWordHl) {
+      ttsHlSpans.push(...wrapRange(range.cloneRange(), hlStyleCss(settings.ttsWordStyle), doc));
     }
     view?.renderer?.scrollToAnchor?.(range, false);
   } catch {
@@ -522,10 +682,458 @@ function ttsHighlight(range: Range) {
 
 function clearTtsHighlight() {
   try {
-    lastHlWin?.CSS?.highlights?.get("tts")?.clear();
+    for (const span of ttsHlSpans.reverse()) {
+      const parent = span.parentNode;
+      if (!parent) continue;
+      while (span.firstChild) parent.insertBefore(span.firstChild, span);
+      parent.removeChild(span);
+      parent.normalize();
+    }
   } catch {
     /* ignore */
   }
+  ttsHlSpans = [];
+}
+
+// Re-render the active highlight after a style/toggle change (live during playback).
+function refreshTtsHighlight() {
+  if (lastSpokenRange && ttsActive) {
+    try {
+      ttsHighlight(lastSpokenRange);
+    } catch {
+      /* ignore */
+    }
+  } else {
+    clearTtsHighlight();
+  }
+}
+
+// ---- TTS highlight style editor (shared by the word and sentence layers) ----
+const HL_PALETTE = [
+  "#ffe08a", "#ffeb3b", "#ffd1dc", "#ff8fab", "#cfe8ff", "#a5d8ff",
+  "#c8f7c5", "#69db7c", "#e3d7ff", "#ffd8a8", "#ffffff", "#222222",
+];
+const DEFAULT_WORD_STYLE: HighlightStyle = {
+  bg: "#ffe08a", bgOpacity: 100, fg: "", fgOpacity: 100,
+  underline: "none", strike: false, thickness: 2, fontStyle: "normal", fontWeight: 700,
+};
+const DEFAULT_SENTENCE_STYLE: HighlightStyle = {
+  bg: "#cfe8ff", bgOpacity: 55, fg: "", fgOpacity: 100,
+  underline: "none", strike: false, thickness: 2, fontStyle: "normal", fontWeight: 400,
+};
+
+let hlEditTarget: "word" | "sentence" = "word";
+function hlEditStyle(): HighlightStyle {
+  return hlEditTarget === "word" ? settings.ttsWordStyle : settings.ttsSentenceStyle;
+}
+
+function renderSwatches(container: HTMLElement, selected: string) {
+  container.innerHTML = ["", ...HL_PALETTE]
+    .map((c) => {
+      const sel = c === selected ? " sel" : "";
+      return c === ""
+        ? `<button class="hl-sw hl-sw-none${sel}" data-color="" title="Default">✕</button>`
+        : `<button class="hl-sw${sel}" data-color="${c}" title="${c}" style="background:${c}"></button>`;
+    })
+    .join("");
+}
+
+// Curated sample passages (original prose, one per genre) used when no book is
+// open — or when the user switches the preview source to "Samples".
+// Curated public-domain passages, 2–3 per genre, each with title + author.
+const HL_SAMPLES: { genre: string; title: string; author: string; text: string }[] = [
+  // --- Literary fiction ---
+  {
+    genre: "Literary fiction",
+    title: "Pride and Prejudice",
+    author: "Jane Austen",
+    text: "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife. However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families, that he is considered the rightful property of some one or other of their daughters.",
+  },
+  {
+    genre: "Literary fiction",
+    title: "Moby-Dick",
+    author: "Herman Melville",
+    text: "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen, and regulating the circulation.",
+  },
+  {
+    genre: "Literary fiction",
+    title: "A Tale of Two Cities",
+    author: "Charles Dickens",
+    text: "It was the best of times, it was the worst of times, it was the age of wisdom, it was the age of foolishness, it was the epoch of belief, it was the epoch of incredulity, it was the season of Light, it was the season of Darkness, it was the spring of hope, it was the winter of despair.",
+  },
+
+  // --- Management & leadership ---
+  {
+    genre: "Management",
+    title: "The Art of War",
+    author: "Sun Tzu",
+    text: "The art of war teaches us to rely not on the likelihood of the enemy's not coming, but on our own readiness to receive him; not on the chance of his not attacking, but rather on the fact that we have made our own position unassailable. Hence the saying: know the enemy and know yourself, and in a hundred battles you will never be in peril.",
+  },
+  {
+    genre: "Management",
+    title: "The Wealth of Nations",
+    author: "Adam Smith",
+    text: "It is not from the benevolence of the butcher, the brewer, or the baker that we expect our dinner, but from their regard to their own interest. We address ourselves, not to their humanity but to their self-love, and never talk to them of our own necessities but of their advantages.",
+  },
+  {
+    genre: "Management",
+    title: "The Prince",
+    author: "Niccolò Machiavelli",
+    text: "It ought to be remembered that there is nothing more difficult to take in hand, more perilous to conduct, or more uncertain in its success, than to take the lead in the introduction of a new order of things. For the reformer has enemies in all who profit by the old order, and only lukewarm defenders in all those who would profit by the new.",
+  },
+
+  // --- Psychology & the mind ---
+  {
+    genre: "Psychology",
+    title: "Meditations",
+    author: "Marcus Aurelius",
+    text: "You have power over your mind—not outside events. Realize this, and you will find strength. The happiness of your life depends upon the quality of your thoughts; therefore guard accordingly, and take care that you entertain no notions unsuitable to virtue and reasonable nature.",
+  },
+  {
+    genre: "Psychology",
+    title: "The Principles of Psychology",
+    author: "William James",
+    text: "The greatest weapon against stress is our ability to choose one thought over another. The art of being wise is the art of knowing what to overlook. My experience is what I agree to attend to; only those items which I notice shape my mind—without selective interest, experience is an utter chaos.",
+  },
+  {
+    genre: "Psychology",
+    title: "Walden",
+    author: "Henry David Thoreau",
+    text: "I went to the woods because I wished to live deliberately, to front only the essential facts of life, and see if I could not learn what it had to teach, and not, when I came to die, discover that I had not lived. I did not wish to live what was not life, living is so dear.",
+  },
+
+  // --- Children's ---
+  {
+    genre: "Children's",
+    title: "Alice's Adventures in Wonderland",
+    author: "Lewis Carroll",
+    text: "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do: once or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it, “and what is the use of a book,” thought Alice, “without pictures or conversations?”",
+  },
+  {
+    genre: "Children's",
+    title: "The Velveteen Rabbit",
+    author: "Margery Williams",
+    text: "“Real isn't how you are made,” said the Skin Horse. “It's a thing that happens to you. When a child loves you for a long, long time, not just to play with, but really loves you, then you become Real. It doesn't happen all at once. You become. It takes a long time.”",
+  },
+  {
+    genre: "Children's",
+    title: "The Wonderful Wizard of Oz",
+    author: "L. Frank Baum",
+    text: "Dorothy lived in the midst of the great Kansas prairies, with Uncle Henry, who was a farmer, and Aunt Em, who was the farmer's wife. Their house was small, for the lumber to build it had to be carried by wagon many miles, and there were four walls, a floor and a roof, which made one room.",
+  },
+
+  // --- Young adult ---
+  {
+    genre: "Young adult",
+    title: "Anne of Green Gables",
+    author: "L. M. Montgomery",
+    text: "It's been my experience that you can nearly always enjoy things if you make up your mind firmly that you will. And of course you must look on the bright side. Tomorrow is always fresh, with no mistakes in it yet. Isn't it splendid to think of all the things there are to find out about?",
+  },
+  {
+    genre: "Young adult",
+    title: "Little Women",
+    author: "Louisa May Alcott",
+    text: "“Christmas won't be Christmas without any presents,” grumbled Jo, lying on the rug. “It's so dreadful to be poor!” sighed Meg, looking down at her old dress. “I don't think it's fair for some girls to have plenty of pretty things, and other girls nothing at all,” added little Amy, with an injured sniff.",
+  },
+  {
+    genre: "Young adult",
+    title: "The Adventures of Huckleberry Finn",
+    author: "Mark Twain",
+    text: "You don't know about me, without you have read a book by the name of The Adventures of Tom Sawyer, but that ain't no matter. That book was made by Mr. Mark Twain, and he told the truth, mainly. There was things which he stretched, but mainly he told the truth.",
+  },
+
+  // --- Romance ---
+  {
+    genre: "Romance",
+    title: "Jane Eyre",
+    author: "Charlotte Brontë",
+    text: "I have for the first time found what I can truly love—I have found you. You are my sympathy—my better self—my good angel. I am bound to you with a strong attachment. I think you good, gifted, lovely: a fervent, a solemn passion is conceived in my heart; it leans to you, draws you to my centre and spring of life.",
+  },
+  {
+    genre: "Romance",
+    title: "Persuasion",
+    author: "Jane Austen",
+    text: "You pierce my soul. I am half agony, half hope. Tell me not that I am too late, that such precious feelings are gone for ever. I offer myself to you again with a heart even more your own than when you almost broke it eight years and a half ago. Dare not say that man forgets sooner than woman.",
+  },
+  {
+    genre: "Romance",
+    title: "Wuthering Heights",
+    author: "Emily Brontë",
+    text: "Whatever our souls are made of, his and mine are the same. If all else perished, and he remained, I should still continue to be; and if all else remained, and he were annihilated, the universe would turn to a mighty stranger. He's always, always in my mind: not as a pleasure, but as my own being.",
+  },
+];
+
+let hlPreviewText = "";
+let hlPreviewCaption = "";
+let hlSampleIdx = 0;
+let hlPreviewSrc: "book" | "sample" = "book";
+
+function isGoodPara(t: string): boolean {
+  if (t.length < 160 || t.length > 620) return false;
+  if (t.split(" ").length < 28) return false;
+  if ((t.match(/[.!?]/g) || []).length < 2) return false;
+  if (t === t.toUpperCase()) return false; // skip ALL-CAPS headings
+  return true;
+}
+
+// Pull a random, readable paragraph from the open book (or null if none fit).
+async function pickBookParagraph(): Promise<string | null> {
+  try {
+    const sections: any[] = view?.book?.sections || [];
+    if (!sections.length) return null;
+    const idxs = sections.map((_, i) => i);
+    for (let i = idxs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [idxs[i], idxs[j]] = [idxs[j], idxs[i]];
+    }
+    let tried = 0;
+    for (const i of idxs) {
+      if (tried++ > 8) break;
+      let doc: Document | undefined;
+      try {
+        doc = await sections[i].createDocument?.();
+      } catch {
+        continue;
+      }
+      if (!doc) continue;
+      const good = [...doc.querySelectorAll("p")]
+        .map((p) => (p.textContent || "").replace(/\s+/g, " ").trim())
+        .filter(isGoodPara);
+      if (good.length) return good[Math.floor(Math.random() * good.length)];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Locate the middle sentence of a paragraph and a middle word within it.
+function centerSentenceWord(text: string) {
+  const sents: { s: number; e: number }[] = [];
+  const Seg: any = (Intl as any).Segmenter;
+  if (Seg) {
+    for (const part of new Seg("en", { granularity: "sentence" }).segment(text)) {
+      const s = part.index;
+      const e = part.index + part.segment.length;
+      if (text.slice(s, e).trim()) sents.push({ s, e });
+    }
+  } else {
+    const re = /[^.!?]*[.!?]+\s*|[^.!?]+$/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) if (m[0].trim()) sents.push({ s: m.index, e: m.index + m[0].length });
+  }
+  if (!sents.length) sents.push({ s: 0, e: text.length });
+  const sc = sents[Math.floor(sents.length / 2)];
+  let ss = sc.s;
+  let se = sc.e;
+  while (se > ss && /\s/.test(text[se - 1])) se--;
+  while (ss < se && /\s/.test(text[ss])) ss++;
+
+  const sentText = text.slice(ss, se);
+  const words: { s: number; e: number }[] = [];
+  if (Seg) {
+    for (const part of new Seg("en", { granularity: "word" }).segment(sentText))
+      if ((part as any).isWordLike)
+        words.push({ s: ss + part.index, e: ss + part.index + part.segment.length });
+  } else {
+    const re = /\S+/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sentText))) words.push({ s: ss + m.index, e: ss + m.index + m[0].length });
+  }
+  let ws = ss;
+  let we = se;
+  if (words.length) {
+    const wc = words[Math.floor(words.length / 2)];
+    ws = wc.s;
+    we = wc.e;
+  }
+  return { ss, se, ws, we };
+}
+
+function renderHlPreviewParagraph() {
+  const t = hlPreviewText;
+  const { ss, se, ws, we } = centerSentenceWord(t);
+  const html =
+    escapeHtml(t.slice(0, ss)) +
+    `<span id="hl-prev-sent">` +
+    escapeHtml(t.slice(ss, ws)) +
+    `<span id="hl-prev-word">` +
+    escapeHtml(t.slice(ws, we)) +
+    `</span>` +
+    escapeHtml(t.slice(we, se)) +
+    `</span>` +
+    escapeHtml(t.slice(se));
+  $("#hl-preview").innerHTML =
+    `<div class="hl-prev-cap">${escapeHtml(hlPreviewCaption)}</div>` +
+    `<p class="hl-prev-text">${html}</p>`;
+}
+
+// Title — Author of the currently open book (best-effort from its metadata).
+function openBookLabel(): string {
+  try {
+    const m = view?.book?.metadata;
+    const title = (m && formatLangMap(m.title)) || "";
+    const author = (m && formatContributor(m.author)) || "";
+    if (title && author) return `“${title}” — ${author}`;
+    if (title) return `“${title}”`;
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+// Choose a passage according to the selected source ("book" or "sample").
+async function pickPreviewPassage(advance = false) {
+  // advancing samples jumps to a different random passage for variety
+  if (advance && hlPreviewSrc === "sample" && HL_SAMPLES.length > 1) {
+    let n = hlSampleIdx;
+    while (n === hlSampleIdx) n = Math.floor(Math.random() * HL_SAMPLES.length);
+    hlSampleIdx = n;
+  }
+  let text = "";
+  let caption = "";
+  if (hlPreviewSrc === "book" && view?.book) {
+    const bp = await pickBookParagraph();
+    if (bp) {
+      text = bp;
+      const label = openBookLabel();
+      caption = label ? "From your book · " + label : "From your book";
+    }
+  }
+  if (!text) {
+    const c = HL_SAMPLES[((hlSampleIdx % HL_SAMPLES.length) + HL_SAMPLES.length) % HL_SAMPLES.length];
+    text = c.text;
+    caption = `${c.genre} · “${c.title}” — ${c.author}`;
+  }
+  hlPreviewText = text;
+  hlPreviewCaption = caption;
+  renderHlPreviewParagraph();
+  updateHlPreview();
+}
+
+function syncPreviewSrcButtons() {
+  const hasBook = !!view?.book;
+  document.querySelectorAll<HTMLElement>("#hl-prev-src .hl-src-btn").forEach((b) => {
+    const src = b.dataset.src as "book" | "sample";
+    b.classList.toggle("active", src === hlPreviewSrc);
+    b.toggleAttribute("disabled", src === "book" && !hasBook);
+  });
+}
+
+function updateHlPreview() {
+  const sent = document.getElementById("hl-prev-sent");
+  const word = document.getElementById("hl-prev-word");
+  if (sent) sent.setAttribute("style", hlStyleCss(settings.ttsSentenceStyle));
+  if (word) word.setAttribute("style", hlStyleCss(settings.ttsWordStyle));
+}
+
+function syncHlEditor() {
+  const s = hlEditStyle();
+  renderSwatches($("#hl-bg-swatches"), s.bg);
+  renderSwatches($("#hl-fg-swatches"), s.fg);
+  $<HTMLInputElement>("#hl-bg-op").value = String(s.bgOpacity);
+  $("#hl-bg-op-val").textContent = s.bgOpacity + "%";
+  $<HTMLInputElement>("#hl-fg-op").value = String(s.fgOpacity);
+  $("#hl-fg-op-val").textContent = s.fgOpacity + "%";
+  $<HTMLSelectElement>("#hl-underline").value = s.underline;
+  $<HTMLInputElement>("#hl-thickness").value = String(s.thickness);
+  $("#hl-thickness-val").textContent = s.thickness + "px";
+  $<HTMLSelectElement>("#hl-fontstyle").value = s.fontStyle;
+  $<HTMLSelectElement>("#hl-fontweight").value = String(s.fontWeight);
+  $<HTMLInputElement>("#hl-strike").checked = s.strike;
+  updateHlPreview();
+}
+
+function openHlEditor(which: "word" | "sentence") {
+  hlEditTarget = which;
+  $("#hl-sheet-title").textContent =
+    which === "word" ? "Current word — highlight style" : "Current sentence — highlight style";
+  // default the preview source to the open book, else samples
+  if (!view?.book) hlPreviewSrc = "sample";
+  syncHlEditor();
+  syncPreviewSrcButtons();
+  // seed an immediate passage so the preview is never blank, then refresh
+  if (!hlPreviewText) {
+    const c = HL_SAMPLES[hlSampleIdx % HL_SAMPLES.length];
+    hlPreviewText = c.text;
+    hlPreviewCaption = `${c.genre} · “${c.title}” — ${c.author}`;
+    renderHlPreviewParagraph();
+    updateHlPreview();
+  }
+  $("#hl-style-sheet").hidden = false;
+  pickPreviewPassage();
+}
+
+function commitHl() {
+  saveSettings(settings);
+  updateHlPreview();
+  refreshTtsHighlight();
+}
+
+function wireHlEditor() {
+  const wireSwatch = (sel: string, key: "bg" | "fg") =>
+    $(sel).addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest?.(".hl-sw") as HTMLElement | null;
+      if (!b) return;
+      (hlEditStyle() as any)[key] = b.dataset.color || "";
+      renderSwatches($(sel), b.dataset.color || "");
+      commitHl();
+    });
+  wireSwatch("#hl-bg-swatches", "bg");
+  wireSwatch("#hl-fg-swatches", "fg");
+
+  $("#hl-prev-src").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest?.(".hl-src-btn") as HTMLElement | null;
+    if (!b || b.hasAttribute("disabled")) return;
+    hlPreviewSrc = (b.dataset.src as "book" | "sample") || "sample";
+    syncPreviewSrcButtons();
+    pickPreviewPassage();
+  });
+  $("#hl-shuffle").addEventListener("click", () => pickPreviewPassage(true));
+
+  $<HTMLInputElement>("#hl-bg-op").addEventListener("input", (e) => {
+    hlEditStyle().bgOpacity = +(e.target as HTMLInputElement).value;
+    $("#hl-bg-op-val").textContent = hlEditStyle().bgOpacity + "%";
+    commitHl();
+  });
+  $<HTMLInputElement>("#hl-fg-op").addEventListener("input", (e) => {
+    hlEditStyle().fgOpacity = +(e.target as HTMLInputElement).value;
+    $("#hl-fg-op-val").textContent = hlEditStyle().fgOpacity + "%";
+    commitHl();
+  });
+  $<HTMLSelectElement>("#hl-underline").addEventListener("change", (e) => {
+    hlEditStyle().underline = (e.target as HTMLSelectElement).value as HighlightStyle["underline"];
+    commitHl();
+  });
+  $<HTMLInputElement>("#hl-thickness").addEventListener("input", (e) => {
+    hlEditStyle().thickness = +(e.target as HTMLInputElement).value;
+    $("#hl-thickness-val").textContent = hlEditStyle().thickness + "px";
+    commitHl();
+  });
+  $<HTMLSelectElement>("#hl-fontstyle").addEventListener("change", (e) => {
+    hlEditStyle().fontStyle = (e.target as HTMLSelectElement).value as HighlightStyle["fontStyle"];
+    commitHl();
+  });
+  $<HTMLSelectElement>("#hl-fontweight").addEventListener("change", (e) => {
+    hlEditStyle().fontWeight = +(e.target as HTMLSelectElement).value;
+    commitHl();
+  });
+  $<HTMLInputElement>("#hl-strike").addEventListener("change", (e) => {
+    hlEditStyle().strike = (e.target as HTMLInputElement).checked;
+    commitHl();
+  });
+
+  $("#hl-reset").addEventListener("click", () => {
+    const def = hlEditTarget === "word" ? DEFAULT_WORD_STYLE : DEFAULT_SENTENCE_STYLE;
+    if (hlEditTarget === "word") settings.ttsWordStyle = { ...def };
+    else settings.ttsSentenceStyle = { ...def };
+    syncHlEditor();
+    commitHl();
+  });
+  $("#hl-done").addEventListener("click", () => ($("#hl-style-sheet").hidden = true));
+  $("#hl-style-sheet").addEventListener("click", (e) => {
+    if (e.target === $("#hl-style-sheet")) $("#hl-style-sheet").hidden = true;
+  });
 }
 
 // Convert foliate's SSML (text + <mark name>) into plain text + mark positions.
@@ -813,9 +1421,22 @@ let audioSaveTimer: number | undefined;
 let audioRate = parseFloat(localStorage.getItem("audioRate") || "1") || 1;
 let audioImportTarget: "play" | "details" = "play"; // where an audio import goes
 
-// top-level chapters used for the track↔chapter mapping
-function tocTop(): any[] {
-  return view?.book?.toc ?? [];
+// Flatten a (possibly nested) TOC into a depth-tagged list.
+function flattenToc(
+  items: any[] | undefined,
+  depth = 0,
+  out: { label: string; href: string; depth: number }[] = [],
+): { label: string; href: string; depth: number }[] {
+  for (const it of items || []) {
+    out.push({ label: it.label || "", href: it.href || "", depth });
+    if (it.subitems?.length) flattenToc(it.subitems, depth + 1, out);
+  }
+  return out;
+}
+
+// All chapters (incl. nested) used for the track↔chapter mapping.
+function tocTop(): { label: string; href: string; depth: number }[] {
+  return flattenToc(view?.book?.toc);
 }
 
 // move the text to the chapter this track is mapped to
@@ -943,6 +1564,14 @@ function wireAudio() {
   };
   $<HTMLInputElement>("#audio-input").addEventListener("change", onAudioFiles);
   $<HTMLInputElement>("#audio-folder-input").addEventListener("change", onAudioFiles);
+
+  // audiobook source chooser (folder vs files)
+  $("#src-folder").addEventListener("click", pickAudioFolder);
+  $("#src-files").addEventListener("click", pickAudioFiles);
+  $("#src-cancel").addEventListener("click", () => ($("#audio-src-sheet").hidden = true));
+  $("#audio-src-sheet").addEventListener("click", (e) => {
+    if (e.target === $("#audio-src-sheet")) $("#audio-src-sheet").hidden = true;
+  });
 
   // Android native folder picker → list of {name, path}; read each into a File
   window.addEventListener("audio-folder", async (e) => {
@@ -1131,18 +1760,40 @@ function wirePlayer() {
     }
   });
 
-  // compact speed: a pill that opens a small speed menu
+  // compact speed: a pill that opens the YouTube-style speed sheet
   $("#pb-speed-btn").addEventListener("click", openSpeedMenu);
-  document.querySelectorAll<HTMLElement>("#speed-menu button").forEach((b) =>
+  const slider = $<HTMLInputElement>("#ss-slider");
+  // live update while dragging (no commit churn until release)
+  slider.addEventListener("input", () => previewSpeed(parseFloat(slider.value) || 1));
+  slider.addEventListener("change", () => setSpeed(parseFloat(slider.value) || 1));
+  $("#ss-minus").addEventListener("click", () => nudgeSpeed(-0.05));
+  $("#ss-plus").addEventListener("click", () => nudgeSpeed(0.05));
+  document.querySelectorAll<HTMLElement>("#speed-sheet .ss-presets button").forEach((b) =>
     b.addEventListener("click", () => setSpeed(parseFloat(b.dataset.rate || "1") || 1)),
   );
-  document.addEventListener("pointerdown", (e) => {
-    const t = e.target as HTMLElement;
-    if (!t.closest?.("#speed-menu") && !t.closest?.("#pb-speed-btn")) closeSpeedMenu();
+  $("#ss-done").addEventListener("click", closeSpeedMenu);
+  $("#speed-sheet").addEventListener("click", (e) => {
+    if (e.target === $("#speed-sheet")) closeSpeedMenu();
   });
 }
 
+function currentSpeed(): number {
+  return playerMode === "audio" ? audioRate : settings.ttsRate || 1;
+}
+
+// Reflect a speed value in the sheet UI without committing to the engine.
+function previewSpeed(v: number) {
+  $("#ss-value").textContent = v.toFixed(2);
+  $("#pb-speed-btn").textContent = (Number.isInteger(v) ? v : +v.toFixed(2)) + "×";
+}
+
+function nudgeSpeed(delta: number) {
+  const v = Math.round(Math.min(3, Math.max(0.25, currentSpeed() + delta)) * 100) / 100;
+  setSpeed(v);
+}
+
 function setSpeed(v: number) {
+  v = Math.round(Math.min(3, Math.max(0.25, v)) * 100) / 100;
   if (playerMode === "audio") {
     audioRate = v;
     audioEl.playbackRate = v;
@@ -1155,20 +1806,18 @@ function setSpeed(v: number) {
       speakSSML(view.tts.resume());
     }
   }
-  $("#pb-speed-btn").textContent = v + "×";
-  closeSpeedMenu();
+  $<HTMLInputElement>("#ss-slider").value = String(v);
+  previewSpeed(v);
 }
 
 function openSpeedMenu() {
-  const m = $("#speed-menu");
-  const r = $("#pb-speed-btn").getBoundingClientRect();
-  m.hidden = false;
-  // anchor above the pill (bar is at the bottom of the screen)
-  m.style.bottom = window.innerHeight - r.top + 6 + "px";
-  m.style.right = window.innerWidth - r.right + "px";
+  const v = currentSpeed();
+  $<HTMLInputElement>("#ss-slider").value = String(v);
+  previewSpeed(v);
+  $("#speed-sheet").hidden = false;
 }
 function closeSpeedMenu() {
-  $("#speed-menu").hidden = true;
+  $("#speed-sheet").hidden = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,7 +1898,7 @@ function contentCSS(s: Settings): string {
     [align="justify"] { text-align: justify; }
     a:link, a:visited { color: ${ACCENT}; }
     img { max-width: 100%; height: auto; }
-    ::highlight(tts) { background: #ffe08a; color: #111; }
+    .reader-tts-hl { border-radius: 2px; }
     ${trail}
   `;
 }
@@ -1578,6 +2227,7 @@ let detailsId: string | null = null;
 interface ChapterStat {
   label: string;
   href: string;
+  depth: number;
   chars: number;
   pages: number;
   startPage: number;
@@ -1620,37 +2270,46 @@ async function computeDetails(book: any, toc: any[]): Promise<BookStats> {
     totalWords += clean ? clean.split(" ").length : 0;
   }
 
+  // cumulative char offset at the start of each section
+  const secStart = new Array(sections.length).fill(0);
+  let acc = 0;
+  for (let i = 0; i < sections.length; i++) {
+    secStart[i] = acc;
+    acc += secChars[i];
+  }
+  const total = acc;
   const cpp = charsPerPage();
-  const idx = toc.map((c) => {
+  const pageOf = (chars: number) => Math.max(1, Math.floor(chars / cpp) + 1);
+
+  // include nested chapters (chapters inside PARTs, etc.)
+  const flat = flattenToc(toc);
+  const idx = flat.map((c) => {
     try {
-      return book.resolveHref?.(c.href)?.index ?? -1;
+      const x = book.resolveHref?.(c.href)?.index;
+      return x == null || x < 0 ? -1 : Math.min(x, sections.length - 1);
     } catch {
       return -1;
     }
   });
+  for (let i = 0; i < idx.length; i++) if (idx[i] < 0) idx[i] = i > 0 ? idx[i - 1] : 0;
 
-  let running = 0;
-  const chapters: ChapterStat[] = toc.map((c, i) => {
-    let start = idx[i];
-    if (start == null || start < 0) start = i > 0 ? running && 0 : 0; // fallback
-    if (start < 0) start = 0;
-    let endExclusive = sections.length;
-    for (let j = i + 1; j < toc.length; j++) {
-      if (idx[j] >= 0) {
-        endExclusive = idx[j];
-        break;
-      }
-    }
-    let chars = 0;
-    for (let s = start; s < endExclusive; s++) chars += secChars[s] || 0;
-    const pages = Math.max(1, Math.ceil(chars / cpp));
-    const startPage = running + 1;
-    const endPage = running + pages;
-    running = endPage;
-    return { label: c.label, href: c.href, chars, pages, startPage, endPage };
+  const chapters: ChapterStat[] = flat.map((c, i) => {
+    const startChars = secStart[idx[i]] ?? 0;
+    const nextChars = i + 1 < flat.length ? (secStart[idx[i + 1]] ?? total) : total;
+    const startPage = pageOf(startChars);
+    const endPage = Math.max(startPage, pageOf(Math.max(startChars, nextChars - 1)));
+    return {
+      label: c.label,
+      href: c.href,
+      depth: c.depth,
+      chars: Math.max(0, nextChars - startChars),
+      pages: Math.max(1, endPage - startPage + 1),
+      startPage,
+      endPage,
+    };
   });
 
-  const totalPages = running || Math.max(1, Math.ceil(totalChars / cpp));
+  const totalPages = Math.max(1, Math.ceil(total / cpp));
   return { totalChars, totalWords, totalPages, chapters };
 }
 
@@ -1692,8 +2351,8 @@ function chaptersHtml(
         ? `<span class="d-ch-sub">🎧 ${files.map((f) => escapeHtml(f)).join(", ")}</span>`
         : "";
       return `
-      <button class="d-chapter" data-href="${escapeHtml(c.href || "")}">
-        <span class="d-ch-title">${i + 1}. ${escapeHtml((c.label || "").trim() || "—")}</span>
+      <button class="d-chapter" data-href="${escapeHtml(c.href || "")}" style="padding-left:${4 + c.depth * 16}px">
+        <span class="d-ch-title">${escapeHtml((c.label || "").trim() || "—")}</span>
         <span class="d-ch-sub">p. ${c.startPage}–${c.endPage} · ${c.pages} page${
           c.pages > 1 ? "s" : ""
         }</span>
@@ -1894,18 +2553,22 @@ function renderMapper(
 ) {
   const opts = (sel: number) =>
     chapters
-      .map(
-        (c, i) =>
-          `<option value="${i}" ${i === sel ? "selected" : ""}>${i + 1}. ${escapeHtml(
-            (c.label || "").trim() || "—",
-          )}</option>`,
-      )
+      .map((c, i) => {
+        // indent nested chapters with figure spaces so the hierarchy reads in a <select>
+        const indent = "  ".repeat(c.depth);
+        return `<option value="${i}" ${i === sel ? "selected" : ""}>${indent}${i + 1}. ${escapeHtml(
+          (c.label || "").trim() || "—",
+        )}</option>`;
+      })
       .join("");
   const rows = tracks
     .map(
       (name, t) => `
       <div class="map-row">
-        <span class="map-file" title="${escapeHtml(name)}">${t + 1}. ${escapeHtml(name)}</span>
+        <div class="map-file">
+          <span class="map-num">${t + 1}</span>
+          <span class="map-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        </div>
         <select class="map-sel" data-track="${t}">${opts(map[t] ?? 0)}</select>
       </div>`,
     )
@@ -1913,9 +2576,13 @@ function renderMapper(
 
   $("#details-body").innerHTML = `
     <h3 class="group mark-head">Map audio → chapters</h3>
-    <p class="d-note">Assign each audio file to a chapter. Several files can share one chapter.</p>
+    <p class="d-note">Assign each audio file (top) to a book chapter (bottom). Several files can share one chapter.</p>
     <div class="map-actions">
       <button id="map-even" class="open-btn ghost">Distribute evenly</button>
+    </div>
+    <div class="map-head-row">
+      <span class="map-head">🎵 Audio file</span>
+      <span class="map-head">📖 Book chapter</span>
     </div>
     <div class="map-list">${rows}</div>
     <div class="d-edit-actions">
@@ -1941,9 +2608,14 @@ function renderMapper(
   });
 }
 
-// Trigger the right audio picker: native folder picker on Android if available,
-// folder input on desktop/web, else multi-file input.
+// Offer the user a choice between importing a folder or picking individual files.
 function pickAudio() {
+  $("#audio-src-sheet").hidden = false;
+}
+
+// Folder import: native SAF picker on Android, webkitdirectory input elsewhere.
+function pickAudioFolder() {
+  $("#audio-src-sheet").hidden = true;
   if (PLATFORM === "android" && typeof (window as any).ReaderNative?.pickAudioFolder === "function") {
     try {
       (window as any).ReaderNative.pickAudioFolder();
@@ -1952,15 +2624,20 @@ function pickAudio() {
       /* fall through */
     }
   }
-  if (PLATFORM === "desktop" || PLATFORM === "web") $("#audio-folder-input").click();
-  else $("#audio-input").click();
+  $("#audio-folder-input").click();
+}
+
+// Multiple-file import: works on every platform via the standard file input.
+function pickAudioFiles() {
+  $("#audio-src-sheet").hidden = true;
+  $("#audio-input").click();
 }
 
 // ---------------------------------------------------------------------------
 // Overlays
 // ---------------------------------------------------------------------------
 
-const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl, detailsEl];
+const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl, detailsEl, helpEl];
 
 function openOverlay(el: HTMLElement) {
   showChrome();
@@ -1969,6 +2646,130 @@ function openOverlay(el: HTMLElement) {
 }
 const openLibrary = () => openOverlay(libraryEl);
 const openSettings = () => openOverlay(settingsEl);
+
+// In-app user guide. Content adapts to the platform (desktop / Android / iOS / web).
+function openHelp() {
+  openOverlay(helpEl);
+  const isDesktop = PLATFORM === "desktop";
+  const isAndroid = PLATFORM === "android";
+  const isIOS = PLATFORM === "ios";
+  const isWeb = PLATFORM === "web";
+
+  const section = (title: string, icon: string, items: (string | false)[]) => {
+    const lis = items.filter(Boolean).map((i) => `<li>${i}</li>`).join("");
+    if (!lis) return "";
+    return `<section class="help-sec"><h3 class="help-h">${icon} ${title}</h3><ul>${lis}</ul></section>`;
+  };
+
+  $("#help-body").innerHTML = `
+    <p class="help-intro">Reader is a private, offline ebook &amp; audiobook reader. Nothing you read leaves your device — there are no ads and no tracking. Here's everything it can do.</p>
+
+    ${section("Your library", "📚", [
+      "<b>Add books</b> — tap <i>+ Open book</i>. Select several files at once to import them together.",
+      "Supported formats: <b>EPUB, MOBI, AZW3, FB2, CBZ</b> (comics) and <b>PDF</b>.",
+      "Books are sorted with the <b>most recently opened first</b>, so you can jump back in quickly.",
+      "Tap a book to read it. Tap the <b>ⓘ info</b> action on a book (or the ⓘ in the chapters panel) to open its <b>details page</b>.",
+      isAndroid && "Open a book file from another app (Files, Drive) with <i>Open with → Reader</i> — it's added automatically.",
+      isDesktop && "Double-click an EPUB/MOBI/PDF in Finder to open it in Reader (file associations).",
+    ])}
+
+    ${section("Reading", "📖", [
+      "<b>Turn pages</b> — tap the right/left edge, swipe, or use the arrow keys / space bar.",
+      "Choose <b>Scroll</b> or <b>Page</b> layout in Settings → Display.",
+      "Your position is saved automatically and synced back to the cover's progress ring.",
+      isAndroid && "<b>Volume buttons</b> can turn pages — toggle in Settings → Reading aids.",
+      isDesktop && "<b>Media keys</b> (◀◀ / ▶▶) can turn pages — toggle in Settings → Reading aids.",
+      "<b>Immersive mode</b> auto-hides the top and bottom bars while you read. Tap the middle of the page to bring them back, or enable <i>Always show header</i>.",
+    ])}
+
+    ${section("Appearance", "🎨", [
+      "<b>Themes</b> — several light, sepia and dark palettes in Settings → Display.",
+      "<b>Fonts</b> — pick from bundled reader-friendly faces (Literata, Bitter, Lora, Merriweather, Atkinson, OpenDyslexic and more) or your system font.",
+      "Adjust <b>font size, line spacing, text alignment</b> and <b>hyphenation</b>.",
+      "Set independent <b>top / bottom / left / right margins</b>.",
+    ])}
+
+    ${section("Find your place", "🔍", [
+      "<b>Contents</b> (chapters icon) lists every chapter, including chapters nested inside parts.",
+      "<b>Search</b> within the current chapter or the entire book, and tap a result to jump there.",
+      "<b>Go to page</b> — type a page number in the search panel.",
+      "<b>Bookmarks</b> — tap the bookmark icon to mark a spot; revisit them from the chapters panel.",
+      "<b>Highlights &amp; notes</b> — select text to highlight it in a colour, attach a note, or copy it.",
+    ])}
+
+    ${section("Listen — Text to speech", "🔊", [
+      "Tap <b>▶ → Text-to-speech</b> to have the book read aloud.",
+      "The spoken text is highlighted as it's read. In Settings → Read aloud you can turn on <b>word highlight</b>, <b>sentence highlight</b>, or <b>both at once</b>.",
+      "Tap the <b>⚙</b> next to each to fully style it — background &amp; text colour with opacity, underline (solid / dotted / dashed / wavy) and thickness, strike-through, font style and font weight.",
+      "Pick a <b>voice</b> and adjust the <b>speed</b>.",
+      isAndroid && "On Android the device's built-in TTS engine is used, so it works offline.",
+    ])}
+
+    ${section("Listen — Audiobooks", "🎧", [
+      "Tap <b>▶ → Audiobook</b>. If none is linked yet you'll be asked to add one: choose a <b>folder</b> or pick <b>individual files</b>.",
+      "Non-audio files in a folder are ignored automatically.",
+      "On the book's <b>details page</b> you can <b>map each audio file to a chapter</b> — useful when one chapter spans several files, or many files map to parts and chapters.",
+      "Audiobook chapters try to auto-align to the book's chapters; use <i>Distribute evenly</i> as a starting point.",
+    ])}
+
+    ${section("The player bar", "⏯️", [
+      "Shared by text-to-speech and audiobooks: a progress bar you can scrub, plus <b>−10s / +10s</b>, play/pause and stop.",
+      "Tap the <b>speed pill</b> for a slider (fine <b>0.05×</b> steps) and quick presets (1× · 1.25× · 1.5× · 2× · 3×).",
+      "<b>Headphone &amp; lock-screen controls</b> work — play/pause and skip from your earbuds or the system media controls.",
+    ])}
+
+    ${section("Book details", "ⓘ", [
+      "Total <b>word and character counts</b>, and a chapter list with <b>start–end page numbers</b> and pages per chapter, computed for your current font &amp; layout.",
+      "<b>Edit the title and author</b> — the change is written back into the EPUB file.",
+      "Link or re-map an audiobook from here.",
+    ])}
+
+    ${
+      isDesktop
+        ? section("Desktop window (macOS)", "🖥️", [
+            "<b>Float on top</b> — keep Reader above all other windows (the float button in the toolbar).",
+            "Set separate <b>opacity</b> for when the window is focused vs in the background, in Settings → Window.",
+            "The window can <b>auto-dim</b> after a period of inactivity, and stays usable at very small sizes.",
+          ])
+        : ""
+    }
+    ${
+      isAndroid
+        ? section("Android extras", "🤖", [
+            "<b>Float (Picture-in-Picture)</b> — shrink Reader into a floating window over other apps, YouTube-style.",
+            "Import an audiobook folder with the native folder picker.",
+            "Volume-button paging and the native TTS engine are Android-specific.",
+          ])
+        : ""
+    }
+    ${
+      isIOS
+        ? section("iPad / iPhone notes", "", [
+            "Import audiobooks as individual files (folder import isn't available in the iOS web view).",
+          ])
+        : ""
+    }
+    ${
+      isWeb
+        ? section("Running in a browser", "🌐", [
+            "Everything is stored locally in your browser. Clearing site data will remove your library.",
+            "For the full experience (floating window, file associations, native TTS) use the desktop or Android app.",
+          ])
+        : ""
+    }
+
+    ${section("Tips & tricks", "💡", [
+      "Turn on <b>both word and sentence highlight</b> for easy reading-along — the word stands out on top of a softly tinted sentence.",
+      "Reading at night? Pair a dark theme with a lower active-window opacity (desktop) or immersive mode.",
+      "Long books feel faster in <b>Page</b> layout; study/reference reads are often easier in <b>Scroll</b>.",
+      "Use highlights with notes as a lightweight study tool — they're saved per book.",
+      "Everything here is optional and toggleable — set it once and it's remembered.",
+    ])}
+
+    <p class="help-foot">Private by design · no ads · no tracking · works offline.</p>
+  `;
+}
+
 const openTOC = () => openOverlay(tocEl);
 function openSearch() {
   openOverlay(searchEl);
@@ -2179,6 +2980,8 @@ function syncSettingsUI() {
   // tts
   $<HTMLInputElement>("#tts-rate").value = String(settings.ttsRate);
   $("#tts-rate-val").textContent = settings.ttsRate.toFixed(1) + "×";
+  $<HTMLInputElement>("#t-hl-word").checked = settings.ttsWordHl;
+  $<HTMLInputElement>("#t-hl-sentence").checked = settings.ttsSentenceHl;
 }
 
 function commit() {
@@ -2192,6 +2995,8 @@ function wireUi() {
   $("#btn-search").addEventListener("click", openSearch);
   $("#btn-bookmark").addEventListener("click", addBookmark);
   $("#btn-library").addEventListener("click", openLibrary);
+  $("#btn-help").addEventListener("click", openHelp);
+  $("#btn-back-help").addEventListener("click", openLibrary);
 
   // --- Search & Go to ---
   $("#btn-close-search").addEventListener("click", closeOverlays);
@@ -2423,6 +3228,19 @@ function wireUi() {
     settings.ttsRate = Number((e.target as HTMLInputElement).value);
     commit();
   });
+  $<HTMLInputElement>("#t-hl-word").addEventListener("change", (e) => {
+    settings.ttsWordHl = (e.target as HTMLInputElement).checked;
+    commit();
+    refreshTtsHighlight();
+  });
+  $<HTMLInputElement>("#t-hl-sentence").addEventListener("change", (e) => {
+    settings.ttsSentenceHl = (e.target as HTMLInputElement).checked;
+    commit();
+    refreshTtsHighlight();
+  });
+  $("#cfg-hl-word").addEventListener("click", () => openHlEditor("word"));
+  $("#cfg-hl-sentence").addEventListener("click", () => openHlEditor("sentence"));
+  wireHlEditor();
 
   // Android volume keys → page turns (forwarded from native as a DOM event)
   window.addEventListener("reader-volume", (e: Event) => {

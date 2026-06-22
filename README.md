@@ -27,7 +27,10 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
 - **Library** — covers + progress bars, **most recently opened first**, **multi-select import**
 - **Resume** — reopens to the exact last position per book (survives refresh/close);
   **auto-restores the last book** on launch
-- **Contents panel** — **Chapters** (jump to any), **Bookmarks**, and **Highlights**
+- **Contents panel** — **Chapters** (jump to any, including chapters **nested inside parts**),
+  **Bookmarks**, and **Highlights**
+- **In-app Help & guide** — a built-in, platform-aware user guide covering every feature and
+  tip, opened from the **?** button in the Library
 - **Search** — find in the **current chapter** or the **whole book**, with highlighted
   excerpts; tap a result to jump
 - **Go to** — jump by **percentage**, or by **page number** if the book has a page list
@@ -36,21 +39,29 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
   add a note, or copy; highlights persist and redraw on reopen
 - **Book details page** (ⓘ on each library book, or in the reader's Contents panel) — cover,
   metadata (format, size, language, publisher), **total words / characters / pages**, a chapter
-  list with **per-chapter page ranges** (estimated for your current font size & margins),
-  **editable title/author** (saved in-app, and written into the EPUB file), and
-  **audiobook linking** (see below)
+  list (**including chapters nested inside parts**) with **per-chapter page ranges** (estimated
+  for your current font size & margins), **editable title/author** (saved in-app, and written
+  into the EPUB file), and **audiobook linking** (see below)
 
 ### Listening
 - **Read aloud (TTS)** — play / pause / **stop**; starts from your **selection** (or the
-  first word of the current view); word-by-word highlight + auto-scroll; voice + speed.
+  first word of the current view); auto-scroll; voice + speed.
   Uses **Web Speech** on desktop/iOS and the **native Android TextToSpeech** engine on Android
-- **Audiobook** — link audio (M4B/MP3/…) from the **book details page** via a **folder
-  picker** (desktop *and* Android), with a **mapper UI** to assign audio files to chapters
-  (several files per chapter supported; "distribute evenly" helper). The **text follows the
-  audio** chapter during playback
+- **Configurable read-along highlight** — highlight the **current word**, the **current
+  sentence**, or **both at once**. Each layer is **fully styleable** (Settings → Read aloud →
+  ⚙): background & text colour with **opacity**, **underline** (solid / double / dotted /
+  dashed / wavy) and thickness, **strike-through**, **font style** and **font weight
+  (100–900)**. A live preview shows the result
+- **Audiobook** — link audio (M4B/MP3/…) from the **book details page**; choose a **folder**
+  *or* **individual files** (both supported on every platform). A **mapper UI** assigns audio
+  files to chapters — including chapters **nested inside parts** — with several files per
+  chapter and a "distribute evenly" helper. The **text follows the audio** chapter during
+  playback. Non-audio files in a folder are ignored
 - **Unified player bar** (TTS + audiobook) — a 2-line bar: progress (`current | ==== | total`)
-  on top; controls below (**⏪ 10s · play/pause · stop · 10s ⏩** + a compact **speed pill**,
-  0.25×–5×). The ▶ button chooses Text-to-speech or Audiobook
+  on top; controls below (**⏪ 10s · play/pause · stop · 10s ⏩** + a compact **speed pill**).
+  Tapping the pill opens a **YouTube-style speed sheet** — a slider in fine **0.05× steps**
+  (0.25×–3×) with quick presets (1× · 1.25× · 1.5× · 2× · 3×). The ▶ button chooses
+  Text-to-speech or Audiobook
 - **Headphone / lock-screen controls** — hardware & Bluetooth media buttons (play / pause /
   skip) drive both TTS and the audiobook via the Media Session API
 
@@ -76,9 +87,9 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
   is toggleable
 
 ### Notes / known limits
-- **TTS word highlight** needs the speech engine to report word boundaries — `onboundary`
-  on desktop/iOS, `onRangeStart` (Android 8+) on Android. A few voices don't report them, in
-  which case speech still works without per-word highlight.
+- **TTS read-along highlight** (word *and* sentence) needs the speech engine to report word
+  boundaries — `onboundary` on desktop/iOS, `onRangeStart` (Android 8+) on Android. A few
+  voices don't report them, in which case speech still works without the moving highlight.
 - **Audiobook sync is chapter-level** — plain audio files carry no per-word timing, so there's
   no read-along word highlight for audiobooks (that needs an EPUB3 media-overlay book).
 - **File associations** are configured once in

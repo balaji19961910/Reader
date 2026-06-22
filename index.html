@@ -49,20 +49,37 @@
     <section id="library" class="overlay open">
       <div class="overlay-head">
         <h2>Library</h2>
-        <label class="open-btn">
-          + Open book
-          <input
-            id="file-input"
-            type="file"
-            accept=".epub,.mobi,.azw,.azw3,.fb2,.fbz,.fb2.zip,.cbz,.pdf"
-            multiple
-            hidden
-          />
-        </label>
+        <div class="lib-head-actions">
+          <button id="btn-help" class="icon-btn" title="Help &amp; guide" aria-label="Help">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>
+          </button>
+          <label class="open-btn">
+            + Open book
+            <input
+              id="file-input"
+              type="file"
+              accept=".epub,.mobi,.azw,.azw3,.fb2,.fbz,.fb2.zip,.cbz,.pdf"
+              multiple
+              hidden
+            />
+          </label>
+        </div>
       </div>
       <div id="book-grid" class="book-grid">
         <p id="empty-hint" class="hint">No books yet. Tap “Open book” to add an EPUB.</p>
       </div>
+    </section>
+
+    <!-- Help & user guide -->
+    <section id="help" class="overlay">
+      <div class="overlay-head">
+        <button id="btn-back-help" class="icon-btn" title="Back">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
+        </button>
+        <h2>Help &amp; guide</h2>
+        <span style="width:40px"></span>
+      </div>
+      <div id="help-body" class="help-body"></div>
     </section>
 
     <!-- Book details page -->
@@ -270,6 +287,22 @@
           <label>Speed <span id="tts-rate-val">1.0×</span></label>
           <input id="tts-rate" type="range" min="0.5" max="2" step="0.1" value="1" />
         </div>
+
+        <div class="hl-cfg-label">Highlight while reading</div>
+        <div class="setting toggle hl-cfg-row">
+          <label for="t-hl-word">Current word</label>
+          <div class="hl-cfg-ctrls">
+            <button class="hl-cfg-btn" id="cfg-hl-word" title="Word highlight style">⚙</button>
+            <input id="t-hl-word" type="checkbox" />
+          </div>
+        </div>
+        <div class="setting toggle hl-cfg-row">
+          <label for="t-hl-sentence">Current sentence</label>
+          <div class="hl-cfg-ctrls">
+            <button class="hl-cfg-btn" id="cfg-hl-sentence" title="Sentence highlight style">⚙</button>
+            <input id="t-hl-sentence" type="checkbox" />
+          </div>
+        </div>
       </div>
 
       <hr class="sep" />
@@ -326,23 +359,115 @@
       </div>
     </footer>
 
-    <div id="speed-menu" class="play-menu" hidden>
-      <button data-rate="0.25">0.25×</button>
-      <button data-rate="0.5">0.5×</button>
-      <button data-rate="0.75">0.75×</button>
-      <button data-rate="1">1×</button>
-      <button data-rate="1.25">1.25×</button>
-      <button data-rate="1.5">1.5×</button>
-      <button data-rate="1.75">1.75×</button>
-      <button data-rate="2">2×</button>
-      <button data-rate="3">3×</button>
-      <button data-rate="4">4×</button>
-      <button data-rate="5">5×</button>
+    <!-- YouTube-style playback-speed sheet -->
+    <div id="speed-sheet" class="sheet-backdrop" hidden>
+      <div class="speed-sheet" role="dialog" aria-label="Playback speed">
+        <div class="ss-title">Playback speed</div>
+        <div class="ss-value"><span id="ss-value">1.00</span>×</div>
+        <div class="ss-slider-row">
+          <button id="ss-minus" class="ss-step" aria-label="Slower">−</button>
+          <input id="ss-slider" type="range" min="0.25" max="3" step="0.05" value="1" />
+          <button id="ss-plus" class="ss-step" aria-label="Faster">+</button>
+        </div>
+        <div class="ss-presets">
+          <button data-rate="1">1×</button>
+          <button data-rate="1.25">1.25×</button>
+          <button data-rate="1.5">1.5×</button>
+          <button data-rate="2">2×</button>
+          <button data-rate="3">3×</button>
+        </div>
+        <button id="ss-done" class="open-btn">Done</button>
+      </div>
+    </div>
+
+    <!-- audiobook import source chooser: folder or multiple files -->
+    <div id="audio-src-sheet" class="sheet-backdrop" hidden>
+      <div class="speed-sheet" role="dialog" aria-label="Import audiobook">
+        <div class="ss-title">Add audiobook</div>
+        <button id="src-folder" class="open-btn">📁 Choose a folder</button>
+        <button id="src-files" class="open-btn ghost">🎵 Choose files</button>
+        <button id="src-cancel" class="open-btn ghost">Cancel</button>
+      </div>
+    </div>
+
+    <!-- TTS highlight style editor (shared by the word and sentence layers) -->
+    <div id="hl-style-sheet" class="sheet-backdrop" hidden>
+      <div class="speed-sheet hl-sheet" role="dialog" aria-label="Highlight style">
+        <div class="ss-title" id="hl-sheet-title">Highlight style</div>
+        <div class="hl-prev-head">
+          <div class="hl-prev-src" id="hl-prev-src">
+            <button type="button" data-src="book" class="hl-src-btn">From book</button>
+            <button type="button" data-src="sample" class="hl-src-btn">Samples</button>
+          </div>
+          <button type="button" id="hl-shuffle" class="hl-shuffle" title="Try another passage">🔀 Another</button>
+        </div>
+        <div class="hl-preview" id="hl-preview"></div>
+
+        <div class="hl-field">
+          <div class="hl-flabel">Background colour</div>
+          <div class="hl-swatches" id="hl-bg-swatches"></div>
+          <div class="hl-slider"><span>Opacity</span><input id="hl-bg-op" type="range" min="0" max="100" step="5" /><span id="hl-bg-op-val" class="hl-num"></span></div>
+        </div>
+
+        <div class="hl-field">
+          <div class="hl-flabel">Text colour</div>
+          <div class="hl-swatches" id="hl-fg-swatches"></div>
+          <div class="hl-slider"><span>Opacity</span><input id="hl-fg-op" type="range" min="0" max="100" step="5" /><span id="hl-fg-op-val" class="hl-num"></span></div>
+        </div>
+
+        <div class="hl-row2">
+          <label class="hl-sel">Underline
+            <select id="hl-underline">
+              <option value="none">None</option>
+              <option value="solid">Solid</option>
+              <option value="double">Double</option>
+              <option value="dotted">Dotted</option>
+              <option value="dashed">Dashed</option>
+              <option value="wavy">Wavy</option>
+            </select>
+          </label>
+          <label class="hl-sel">Thickness <span id="hl-thickness-val" class="hl-num"></span>
+            <input id="hl-thickness" type="range" min="1" max="6" step="1" />
+          </label>
+        </div>
+
+        <div class="hl-row2">
+          <label class="hl-sel">Font style
+            <select id="hl-fontstyle">
+              <option value="normal">Normal</option>
+              <option value="italic">Italic</option>
+            </select>
+          </label>
+          <label class="hl-sel">Font weight
+            <select id="hl-fontweight">
+              <option value="100">100 Thin</option>
+              <option value="200">200 Extra-light</option>
+              <option value="300">300 Light</option>
+              <option value="400">400 Regular</option>
+              <option value="500">500 Medium</option>
+              <option value="600">600 Semi-bold</option>
+              <option value="700">700 Bold</option>
+              <option value="800">800 Extra-bold</option>
+              <option value="900">900 Black</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="setting toggle">
+          <label for="hl-strike">Strike-through</label>
+          <input id="hl-strike" type="checkbox" />
+        </div>
+
+        <div class="hl-actions">
+          <button id="hl-reset" class="open-btn ghost">Reset</button>
+          <button id="hl-done" class="open-btn">Done</button>
+        </div>
+      </div>
     </div>
 
     <audio id="audio-el" preload="metadata"></audio>
     <audio id="tts-silence" loop></audio>
-    <input id="audio-input" type="file" accept="audio/*,.m4b,.m4a,.mp3,.aac" multiple hidden />
+    <input id="audio-input" type="file" accept="audio/*,.m4b,.m4a,.mp3,.aac,.ogg,.oga,.opus,.wav,.flac" multiple hidden />
     <input id="audio-folder-input" type="file" webkitdirectory multiple hidden />
   </body>
 </html>

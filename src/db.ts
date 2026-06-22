@@ -110,6 +110,25 @@ export interface Settings {
   // --- Text to speech ---
   ttsRate: number; // 0.5..2.0
   ttsVoice: string; // voiceURI ("" = default)
+
+  // --- TTS highlighting (word and/or sentence, each independently styled) ---
+  ttsWordHl: boolean; // highlight the word currently being spoken
+  ttsSentenceHl: boolean; // highlight the sentence currently being spoken
+  ttsWordStyle: HighlightStyle;
+  ttsSentenceStyle: HighlightStyle;
+}
+
+// Visual style for a TTS highlight layer.
+export interface HighlightStyle {
+  bg: string; // background hex, "" = none
+  bgOpacity: number; // 0..100
+  fg: string; // text-color hex, "" = inherit book color
+  fgOpacity: number; // 0..100
+  underline: "none" | "solid" | "double" | "dotted" | "dashed" | "wavy";
+  strike: boolean; // strike-through
+  thickness: number; // text-decoration thickness, px (1..6)
+  fontStyle: "normal" | "italic";
+  fontWeight: number; // 100..900
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -139,6 +158,31 @@ const DEFAULT_SETTINGS: Settings = {
 
   ttsRate: 1,
   ttsVoice: "",
+
+  ttsWordHl: true,
+  ttsSentenceHl: false,
+  ttsWordStyle: {
+    bg: "#ffe08a",
+    bgOpacity: 100,
+    fg: "",
+    fgOpacity: 100,
+    underline: "none",
+    strike: false,
+    thickness: 2,
+    fontStyle: "normal",
+    fontWeight: 700,
+  },
+  ttsSentenceStyle: {
+    bg: "#cfe8ff",
+    bgOpacity: 55,
+    fg: "",
+    fgOpacity: 100,
+    underline: "none",
+    strike: false,
+    thickness: 2,
+    fontStyle: "normal",
+    fontWeight: 400,
+  },
 };
 
 export function loadSettings(): Settings {

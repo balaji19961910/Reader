@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+// Emitter/Manager are only used by the macOS/iOS-gated file-open + media-key code.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use tauri::{Emitter, Manager};
 
 // Queue of files the OS asked us to open (file associations / "Open with").
@@ -113,6 +115,162 @@ fn setup_media_keys(app: tauri::AppHandle, enabled: Arc<AtomicBool>) {
     std::mem::forget(block); // keep the handler alive for the app's lifetime
 }
 
+// --- OAuth (Google Drive sign-in on desktop) -----------------------------
+// Desktop uses the standard installed-app flow: open the system browser to the
+// consent page with a 127.0.0.1 loopback redirect, capture the code, and
+// exchange it (with the desktop client secret + PKCE verifier) for tokens.
+#[derive(serde::Serialize)]
+struct OauthTokens {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: i64,
+}
+
+#[cfg(desktop)]
+fn parse_query_param(req: &str, key: &str) -> Option<String> {
+    let line = req.lines().next()?; // GET /?code=XXX&... HTTP/1.1
+    let path = line.split_whitespace().nth(1)?;
+    let q = path.split('?').nth(1)?;
+    for pair in q.split('&') {
+        let mut it = pair.splitn(2, '=');
+        if it.next()? == key {
+            let val = it.next().unwrap_or("");
+            return Some(
+                urlencoding::decode(val)
+                    .map(|c| c.into_owned())
+                    .unwrap_or_else(|_| val.to_string()),
+            );
+        }
+    }
+    None
+}
+
+#[cfg(desktop)]
+fn token_request(token_url: &str, form: &[(&str, &str)]) -> Result<OauthTokens, String> {
+    let resp = ureq::post(token_url)
+        .send_form(form)
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+    if let Some(err) = json.get("error").and_then(|v| v.as_str()) {
+        return Err(format!(
+            "{}: {}",
+            err,
+            json.get("error_description").and_then(|v| v.as_str()).unwrap_or("")
+        ));
+    }
+    Ok(OauthTokens {
+        access_token: json["access_token"].as_str().unwrap_or("").to_string(),
+        refresh_token: json["refresh_token"].as_str().map(|s| s.to_string()),
+        expires_in: json["expires_in"].as_i64().unwrap_or(3600),
+    })
+}
+
+#[cfg(desktop)]
+fn desktop_oauth_blocking(
+    client_id: String,
+    client_secret: String,
+    scope: String,
+    challenge: String,
+    verifier: String,
+    auth_base: String,
+    token_url: String,
+) -> Result<OauthTokens, String> {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let redirect = format!("http://127.0.0.1:{port}");
+    let enc = |s: &str| urlencoding::encode(s).into_owned();
+    let auth_url = format!(
+        "{auth_base}?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent",
+        enc(&client_id), enc(&redirect), enc(&scope), enc(&challenge),
+    );
+    open::that(&auth_url).map_err(|e| e.to_string())?;
+
+    let (mut stream, _) = listener.accept().map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 8192];
+    let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let code = parse_query_param(&req, "code");
+    let body = "<html><body style='font-family:system-ui;text-align:center;padding-top:3rem'><h2>Reader is connected ✓</h2><p>You can close this tab and return to the app.</p></body></html>";
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(), body,
+    );
+    let _ = stream.write_all(resp.as_bytes());
+
+    let code = code.ok_or("No authorization code was returned")?;
+    token_request(
+        &token_url,
+        &[
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("code", code.as_str()),
+            ("code_verifier", verifier.as_str()),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", redirect.as_str()),
+        ],
+    )
+}
+
+// Open the browser, run the loopback, return tokens. Desktop only.
+#[tauri::command]
+async fn desktop_oauth(
+    client_id: String,
+    client_secret: String,
+    scope: String,
+    challenge: String,
+    verifier: String,
+    auth_base: String,
+    token_url: String,
+) -> Result<OauthTokens, String> {
+    #[cfg(desktop)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            desktop_oauth_blocking(
+                client_id, client_secret, scope, challenge, verifier, auth_base, token_url,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (client_id, client_secret, scope, challenge, verifier, auth_base, token_url);
+        Err("desktop only".into())
+    }
+}
+
+// Exchange a refresh token for a fresh access token. Desktop only.
+#[tauri::command]
+async fn oauth_refresh(
+    client_id: String,
+    client_secret: String,
+    refresh_token: String,
+    token_url: String,
+) -> Result<OauthTokens, String> {
+    #[cfg(desktop)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            token_request(
+                &token_url,
+                &[
+                    ("client_id", client_id.as_str()),
+                    ("client_secret", client_secret.as_str()),
+                    ("refresh_token", refresh_token.as_str()),
+                    ("grant_type", "refresh_token"),
+                ],
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (client_id, client_secret, refresh_token, token_url);
+        Err("desktop only".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // On Windows/Linux a file opened via "Open with" arrives as a CLI argument.
@@ -138,7 +296,9 @@ pub fn run() {
             set_window_opacity,
             get_pending_files,
             read_file_bytes,
-            set_media_keys
+            set_media_keys,
+            desktop_oauth,
+            oauth_refresh
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

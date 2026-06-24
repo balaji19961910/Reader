@@ -50,23 +50,24 @@
       <div class="overlay-head">
         <h2>Library</h2>
         <div class="lib-head-actions">
+          <button id="btn-sync" class="icon-btn" title="Sync library" aria-label="Sync library">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          </button>
           <button id="btn-help" class="icon-btn" title="Help &amp; guide" aria-label="Help">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>
           </button>
           <label class="open-btn">
             + Open book
-            <input
-              id="file-input"
-              type="file"
-              accept=".epub,.mobi,.azw,.azw3,.fb2,.fbz,.fb2.zip,.cbz,.pdf"
-              multiple
-              hidden
-            />
+            <input id="file-input" type="file" multiple hidden />
           </label>
         </div>
       </div>
+      <div class="lib-bar">
+        <nav id="lib-crumbs" class="lib-crumbs"></nav>
+        <button id="btn-new-folder" class="lib-newfolder">＋ New folder</button>
+      </div>
       <div id="book-grid" class="book-grid">
-        <p id="empty-hint" class="hint">No books yet. Tap “Open book” to add an EPUB.</p>
+        <p id="empty-hint" class="hint">No books yet. Tap “Open book” to add a file.</p>
       </div>
     </section>
 
@@ -81,6 +82,40 @@
       </div>
       <div id="help-body" class="help-body"></div>
     </section>
+
+    <!-- Universal text / code viewer -->
+    <section id="codeview" class="overlay">
+      <div class="overlay-head">
+        <button id="cv-back" class="icon-btn" title="Back">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
+        </button>
+        <h2 id="cv-title" class="cv-title">File</h2>
+        <div class="cv-actions">
+          <div id="cv-toggle" class="cv-toggle" hidden>
+            <button data-view="rendered" class="cv-seg">Rendered</button>
+            <button data-view="source" class="cv-seg">Source</button>
+          </div>
+          <button id="cv-save" class="icon-btn" title="Save" hidden>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="cv-rendered-wrap" class="cv-rendered-wrap" hidden>
+        <iframe id="cv-rendered" class="cv-rendered" sandbox="allow-same-origin"></iframe>
+      </div>
+      <div id="cv-source" class="cv-source"></div>
+    </section>
+
+    <!-- Open-mode chooser: add the file to the library, or just view it once -->
+    <div id="open-mode-sheet" class="sheet-backdrop" hidden>
+      <div class="speed-sheet" role="dialog" aria-label="Open file">
+        <div class="ss-title" id="om-title">Open file</div>
+        <p class="sync-note" id="om-note"></p>
+        <button id="om-add" class="open-btn">＋ Add to library</button>
+        <button id="om-once" class="open-btn ghost">View once</button>
+        <button id="om-cancel" class="open-btn ghost">Cancel</button>
+      </div>
+    </div>
 
     <!-- Book details page -->
     <section id="details" class="overlay">
@@ -316,9 +351,27 @@
         <label for="t-volume">Volume buttons turn pages</label>
         <input id="t-volume" type="checkbox" />
       </div>
+      <div class="setting toggle">
+        <label for="t-autoadvance">Auto-advance into the next chapter</label>
+        <input id="t-autoadvance" type="checkbox" />
+      </div>
+      <p class="sync-note">When on, reading aloud continues into the next chapter and the page follows the audiobook. When off, playback stops at the end of each chapter.</p>
+
     </section>
 
     <div id="scrim"></div>
+
+    <!-- Floating sync indicator (shows the file syncing + % + bar, anywhere) -->
+    <div id="sync-toast" class="sync-toast" hidden>
+      <svg class="sync-toast-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+      <div class="sync-toast-main">
+        <div class="sync-toast-row">
+          <span id="sync-toast-msg">Syncing…</span>
+          <span id="sync-toast-pct">0%</span>
+        </div>
+        <div class="sync-toast-track"><div id="sync-toast-bar"></div></div>
+      </div>
+    </div>
 
     <!-- Selection popup (highlight / note / copy) -->
     <div id="sel-popup" class="sel-popup" hidden>
@@ -337,8 +390,15 @@
       <button id="menu-audio">🎧 Audiobook</button>
     </div>
 
-    <!-- Unified playback bar (TTS + audiobook): progress row + controls row -->
+    <!-- Unified playback bar (TTS + audiobook): queue strip + progress + controls -->
     <footer id="player-bar" hidden>
+      <!-- audiobook queue strip (horizontal, current centred) -->
+      <div id="pb-queue-wrap" hidden>
+        <div id="pb-queue" class="pb-queue"></div>
+        <button id="pb-queue-expand" class="pb-q-expand" title="Show all tracks" aria-label="Show all tracks">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+        </button>
+      </div>
       <div class="pb-progress">
         <span id="pb-cur" class="pb-t">0:00</span>
         <input id="pb-seek" type="range" min="0" max="1000" value="0" />
@@ -349,34 +409,95 @@
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
         </button>
         <button id="pb-play" class="icon-btn" title="Play / pause"></button>
-        <button id="pb-stop" class="icon-btn" title="Stop">
+        <!-- TTS keeps a single, simple bar: stop inline -->
+        <button id="pb-stop" class="icon-btn pb-tts-only" title="Stop">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
         </button>
         <button id="pb-fwd" class="icon-btn" title="Forward 10s">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
         </button>
-        <button id="pb-speed-btn" class="pb-speed-btn" title="Playback speed">1×</button>
+        <!-- audiobook gets the "more" sheet (repeat / prev / next / queue) -->
+        <button id="pb-more" class="icon-btn pb-audio-only" title="More">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+        </button>
+        <button id="pb-speed-btn" class="pb-speed-btn pb-tts-only" title="Playback speed"><span id="pb-speed-label">1×</span></button>
       </div>
     </footer>
+
+    <!-- Player "more" sheet: repeat + speed (row 1), prev/stop/next (row 2) -->
+    <div id="player-more" class="sheet-backdrop" hidden>
+      <div class="speed-sheet" role="dialog" aria-label="Playback options">
+        <div class="ss-head">
+          <div class="ss-title">Playback</div>
+          <button id="pm-close" class="ss-close" aria-label="Close">✕</button>
+        </div>
+        <div class="pm-row1">
+          <button id="pb-repeat" class="pm-chip" title="Repeat">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+            <span id="pb-repeat-label">No repeat</span>
+          </button>
+          <button id="pm-speed" class="pm-chip" title="Playback speed">
+            <span id="pm-speed-label">1×</span> speed
+          </button>
+        </div>
+        <div class="pm-row2">
+          <button id="pb-prev" class="pm-big" title="Previous track">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+          </button>
+          <button id="pm-stop" class="pm-big" title="Stop">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+          </button>
+          <button id="pb-next" class="pm-big" title="Next track">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
+          </button>
+        </div>
+        <label class="pm-toggle">
+          <input id="pm-resume" type="checkbox" />
+          <span>Resume each file where I left off</span>
+        </label>
+      </div>
+    </div>
 
     <!-- YouTube-style playback-speed sheet -->
     <div id="speed-sheet" class="sheet-backdrop" hidden>
       <div class="speed-sheet" role="dialog" aria-label="Playback speed">
-        <div class="ss-title">Playback speed</div>
+        <div class="ss-head">
+          <div class="ss-title">Playback speed</div>
+          <button id="ss-close" class="ss-close" aria-label="Close">✕</button>
+        </div>
         <div class="ss-value"><span id="ss-value">1.00</span>×</div>
         <div class="ss-slider-row">
           <button id="ss-minus" class="ss-step" aria-label="Slower">−</button>
-          <input id="ss-slider" type="range" min="0.25" max="3" step="0.05" value="1" />
+          <input id="ss-slider" type="range" min="0" max="1000" step="1" value="500" />
           <button id="ss-plus" class="ss-step" aria-label="Faster">+</button>
         </div>
         <div class="ss-presets">
+          <button data-rate="0.25">0.25×</button>
+          <button data-rate="0.5">0.5×</button>
+          <button data-rate="0.75">0.75×</button>
           <button data-rate="1">1×</button>
           <button data-rate="1.25">1.25×</button>
           <button data-rate="1.5">1.5×</button>
+          <button data-rate="1.75">1.75×</button>
           <button data-rate="2">2×</button>
           <button data-rate="3">3×</button>
         </div>
-        <button id="ss-done" class="open-btn">Done</button>
+      </div>
+    </div>
+
+    <!-- audiobook queue: full track list + continuous-mode toggle -->
+    <div id="queue-sheet" class="sheet-backdrop" hidden>
+      <div class="speed-sheet queue-sheet" role="dialog" aria-label="Audio queue">
+        <div class="ss-head">
+          <div class="ss-title">Audio queue</div>
+          <button id="queue-close" class="ss-close" aria-label="Close">✕</button>
+        </div>
+        <div class="setting toggle q-cont-row">
+          <label for="q-continuous">Play continuously (ignore chapters)</label>
+          <input id="q-continuous" type="checkbox" />
+        </div>
+        <p class="q-cont-note">When on, the queue plays straight through like a music player and the book view won't follow it.</p>
+        <div id="queue-list" class="queue-list"></div>
       </div>
     </div>
 
@@ -387,6 +508,64 @@
         <button id="src-folder" class="open-btn">📁 Choose a folder</button>
         <button id="src-files" class="open-btn ghost">🎵 Choose files</button>
         <button id="src-cancel" class="open-btn ghost">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Sync sheet (opened from the Library; all cloud + backup controls) -->
+    <div id="sync-sheet" class="sheet-backdrop" hidden>
+      <div class="speed-sheet hl-sheet" role="dialog" aria-label="Sync &amp; backup">
+        <div class="ss-head">
+          <div class="ss-title">Sync &amp; backup</div>
+          <button id="sync-close" class="ss-close" aria-label="Close">✕</button>
+        </div>
+
+        <div class="setting">
+          <label>Cloud account</label>
+          <div class="sync-providers" id="sync-providers">
+            <button class="sync-prov" data-prov="gdrive">Google&nbsp;Drive</button>
+            <button class="sync-prov" data-prov="onedrive">OneDrive</button>
+          </div>
+        </div>
+        <div id="sync-account" class="sync-account" hidden></div>
+        <button id="sync-signout" class="open-btn ghost" hidden>Sign out (keep local books)</button>
+
+        <div class="setting">
+          <label for="sync-folder">Folder</label>
+          <input id="sync-folder" type="text" class="sync-input" placeholder="ReaderAppData" />
+        </div>
+        <div class="setting">
+          <label for="sync-filename">File name</label>
+          <input id="sync-filename" type="text" class="sync-input" placeholder="reader-sync.json" />
+        </div>
+        <div class="setting toggle">
+          <label for="sync-auto">Auto-sync progress (on change &amp; on open)</label>
+          <input id="sync-auto" type="checkbox" />
+        </div>
+        <div class="setting toggle">
+          <label for="sync-content">Also sync audiobook files</label>
+          <input id="sync-content" type="checkbox" />
+        </div>
+        <p id="sync-libinfo" class="sync-note"></p>
+        <button id="sync-addall" class="open-btn ghost">Add all books to cloud library</button>
+        <div class="setting">
+          <label for="sync-evict">Free up files not opened in N days (0 = keep all)</label>
+          <input id="sync-evict" type="number" min="0" step="1" class="sync-input" />
+        </div>
+
+        <button id="sync-now" class="open-btn">Sync the whole library now</button>
+        <div id="sync-progress-wrap" class="sync-progress-wrap" hidden>
+          <div id="sync-progress-bar" class="sync-progress-bar"></div>
+        </div>
+        <p id="sync-status" class="sync-note"></p>
+        <div id="sync-items" class="sync-items" hidden></div>
+
+        <div class="sync-row">
+          <button id="sync-export" class="open-btn ghost">Export backup file</button>
+          <label class="open-btn ghost">
+            Import backup
+            <input id="sync-import" type="file" accept=".json,application/json" hidden />
+          </label>
+        </div>
       </div>
     </div>
 

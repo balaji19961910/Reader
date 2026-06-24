@@ -28,6 +28,8 @@ export interface BookRecord {
   progress?: number; // 0..1
   bookmarks?: Bookmark[];
   annotations?: Annotation[];
+  folder?: string; // library folder path ("" = root, e.g. "Fiction/SciFi")
+  evicted?: boolean; // local bytes freed up; re-download from cloud on open
   addedAt: number;
   lastOpened: number;
 }
@@ -61,6 +63,18 @@ export async function listBooks(): Promise<BookRecord[]> {
 
 export async function setLastOpened(id: string): Promise<void> {
   await set(LAST_OPENED_KEY, id);
+}
+
+// ---- Library folders (paths like "Fiction/SciFi"; "" is the root) ----
+const FOLDERS_KEY = "app:folders";
+
+export async function getFolders(): Promise<string[]> {
+  return (await get<string[]>(FOLDERS_KEY)) ?? [];
+}
+
+export async function saveFolders(list: string[]): Promise<void> {
+  const clean = [...new Set(list.filter(Boolean))].sort();
+  await set(FOLDERS_KEY, clean);
 }
 
 export async function getLastOpened(): Promise<string | undefined> {
@@ -106,6 +120,7 @@ export interface Settings {
   // --- Reading aids ---
   mediaKeys: boolean; // F7 = prev, F9 = next (desktop)
   volumeButtons: boolean; // volume up/down turn pages (Android)
+  autoAdvance: boolean; // keep playing into the next chapter (TTS + audiobook)
 
   // --- Text to speech ---
   ttsRate: number; // 0.5..2.0
@@ -155,6 +170,7 @@ const DEFAULT_SETTINGS: Settings = {
 
   mediaKeys: true,
   volumeButtons: true,
+  autoAdvance: true,
 
   ttsRate: 1,
   ttsVoice: "",
@@ -220,12 +236,19 @@ export async function getAudioBlob(bookId: string, i: number): Promise<Blob | un
   return get<Blob>(`audioBlob:${bookId}:${i}`);
 }
 
+// Drop just the audio blobs (keep the manifest of names so they can re-download).
+export async function clearAudioBlobs(bookId: string): Promise<void> {
+  const names = await getAudioTracks(bookId);
+  for (let i = 0; i < names.length; i++) await del(`audioBlob:${bookId}:${i}`);
+}
+
 export async function deleteAudio(bookId: string): Promise<void> {
   const names = await getAudioTracks(bookId);
   await del(`audioManifest:${bookId}`);
   for (let i = 0; i < names.length; i++) await del(`audioBlob:${bookId}:${i}`);
   await del(`audioMap:${bookId}`);
   localStorage.removeItem(`audioPos:${bookId}`);
+  localStorage.removeItem(`audioContinuous:${bookId}`);
 }
 
 // Per-track chapter index (many audio files can map to one chapter).
@@ -235,6 +258,28 @@ export async function getAudioMap(bookId: string): Promise<number[]> {
 
 export async function setAudioMap(bookId: string, map: number[]): Promise<void> {
   await set(`audioMap:${bookId}`, map);
+}
+
+// Swap two audio tracks (name + blob + map entry) — used to reorder the queue.
+export async function swapAudio(bookId: string, i: number, j: number): Promise<void> {
+  const names = await getAudioTracks(bookId);
+  if (i < 0 || j < 0 || i >= names.length || j >= names.length || i === j) return;
+  [names[i], names[j]] = [names[j], names[i]];
+  await setAudioTracks(bookId, names);
+  const bi = await getAudioBlob(bookId, i);
+  const bj = await getAudioBlob(bookId, j);
+  if (bj) await setAudioBlob(bookId, i, bj);
+  else await del(`audioBlob:${bookId}:${i}`);
+  if (bi) await setAudioBlob(bookId, j, bi);
+  else await del(`audioBlob:${bookId}:${j}`);
+  const map = await getAudioMap(bookId);
+  if (map.length) {
+    const a = map[i] ?? -1;
+    const b = map[j] ?? -1;
+    map[i] = b;
+    map[j] = a;
+    await setAudioMap(bookId, map);
+  }
 }
 
 export interface AudioPos {
@@ -254,4 +299,14 @@ export function loadAudioPos(bookId: string): AudioPos {
 
 export function saveAudioPos(bookId: string, pos: AudioPos): void {
   localStorage.setItem(`audioPos:${bookId}`, JSON.stringify(pos));
+}
+
+// Per-book "continuous queue" mode: when on, audio plays as a standalone queue
+// and ignores the chapter↔audio mapping (the text view never jumps with it).
+export function loadAudioContinuous(bookId: string): boolean {
+  return localStorage.getItem(`audioContinuous:${bookId}`) === "1";
+}
+
+export function saveAudioContinuous(bookId: string, on: boolean): void {
+  localStorage.setItem(`audioContinuous:${bookId}`, on ? "1" : "0");
 }

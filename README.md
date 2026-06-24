@@ -1,11 +1,12 @@
 # Reader
 
-A privacy-first, cross-platform ebook reader for **EPUB, MOBI and more** — no ads, no
-tracking, no unnecessary data collection. Runs on **macOS, Windows, Android, iPad/iOS,
-and the web** from a single codebase.
+A privacy-first, cross-platform reader for **ebooks, audiobooks, and any text/code file**
+— no ads, no tracking, no unnecessary data collection. Runs on **macOS, Windows, Android,
+iPad/iOS, and the web** from a single codebase.
 
 Built with **Tauri 2** (Rust shell) + **Vite** + **TypeScript**, using
-[foliate-js](https://github.com/johnfactotum/foliate-js) for rendering.
+[foliate-js](https://github.com/johnfactotum/foliate-js) for book rendering and
+[CodeMirror 6](https://codemirror.net/) for the text/code viewer.
 
 App identifier: `com.balaji.reader`
 
@@ -23,8 +24,14 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
 ### Reading
 - **Multi-format rendering** via foliate-js — **EPUB** (2 & 3), **MOBI / AZW3**,
   **FB2 / FBZ**, **CBZ**, **PDF** (experimental)
+- **Universal text/code viewer** (CodeMirror) — **TXT, Markdown, HTML, XML, JSON** and source
+  files for ~50 languages open with syntax highlighting; **Markdown/HTML** get a **Rendered ↔
+  Source** toggle, and Source is **editable + saveable** (back into the library or a download)
+- **Open once or add to library** — opening any file asks whether to keep it or just view it
 - **Scroll view _and_ page view** — live toggle (no re-render)
-- **Library** — covers + progress bars, **most recently opened first**, **multi-select import**
+- **Folder-structured library** — covers + progress bars, **folders** (create / rename / delete,
+  breadcrumb navigation, move books between folders), **most recently opened first**,
+  **multi-select import**
 - **Resume** — reopens to the exact last position per book (survives refresh/close);
   **auto-restores the last book** on launch
 - **Contents panel** — **Chapters** (jump to any, including chapters **nested inside parts**),
@@ -53,20 +60,39 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
   dashed / wavy) and thickness, **strike-through**, **font style** and **font weight
   (100–900)**. A live preview shows the result
 - **Audiobook** — link audio (M4B/MP3/…) from the **book details page**; choose a **folder**
-  *or* **individual files** (both supported on every platform). A **mapper UI** assigns audio
-  files to chapters — including chapters **nested inside parts** — with several files per
-  chapter and a "distribute evenly" helper. The **text follows the audio** chapter during
-  playback. Non-audio files in a folder are ignored
-- **Unified player bar** (TTS + audiobook) — a 2-line bar: progress (`current | ==== | total`)
-  on top; controls below (**⏪ 10s · play/pause · stop · 10s ⏩** + a compact **speed pill**).
-  Tapping the pill opens a **YouTube-style speed sheet** — a slider in fine **0.05× steps**
-  (0.25×–3×) with quick presets (1× · 1.25× · 1.5× · 2× · 3×). The ▶ button chooses
-  Text-to-speech or Audiobook
+  *or* **individual files** (every platform). The **mapper** assigns files to chapters
+  (incl. chapters **nested inside parts**): **reorder** with ▲▼, **pin** some manually, tick the
+  target chapters and **Auto-fill** the rest in order. One file can span several chapters;
+  several files can share one. Non-audio files are ignored
+- **Audio queue** — a horizontal **queue strip** (current centred) + an expandable **track list**
+  with durations; **per-file resume** (each file remembers where you left off, toggleable),
+  **repeat off / one / all**, and a per-book **continuous mode** that plays straight through like
+  a music player, ignoring the chapter map
+- **Player bar** — **TTS** is one simple bar (**⏪10s · play/pause · stop · 10s⏩ · speed**);
+  **audiobooks** use **⏪10s · play · 10s⏩ · ⋮** with a *more* sheet (repeat, prev/stop/next,
+  speed, resume). The ▶ button chooses Text-to-speech or Audiobook
+- **Speed** — a slider from **0.05× to 10×** (1× centred, exponential so slow speeds get fine
+  control) plus presets **0.25× · 0.5× · 0.75× · 1× · 1.25× · 1.5× · 1.75× · 2× · 3×**
+- **Auto-advance** — keep playback (TTS *and* audiobooks) flowing into the next chapter, or stop
+  at each chapter's end (toggle in Settings → Reading aids)
 - **Headphone / lock-screen controls** — hardware & Bluetooth media buttons (play / pause /
   skip) drive both TTS and the audiobook via the Media Session API
 
+### Sync & backup (opt-in)
+- **Google Drive sign-in** (Library → **⟳ Sync**) — OAuth per platform: token popup on web,
+  loopback + PKCE on desktop, Custom Tab + custom-scheme on Android. Your data lives in **your
+  own Drive**; nothing touches a server we run
+- **Progress sync** — reading position, bookmarks/highlights and audio position merge with
+  **furthest-progress-wins** (page 20 beats page 12). **Themes & settings stay per-device**
+- **Whole-library sync, your choice** — per book, **Add to / Remove from cloud library** on its
+  details page. Synced books are stored as their **original files in your folder structure**,
+  mirrored inside the Drive `Reader` folder (browsable), with audiobooks under an opt-in toggle
+- **Offline backup file** — Export/Import a portable JSON of your progress without the cloud
+- See [`SYNC_SETUP`](src/cloud.ts) (the `SYNC_CONFIG` block) for the per-platform OAuth client ids
+
 ### Appearance
-- **Themes** — Light, Paper, Sepia, Gray, Dark, Nord, Solarized Dark, OLED Black
+- **Themes** — Light, Paper, Sepia, Gray, Dark, Nord, Solarized Dark, OLED Black — each with its
+  own **multi-colour progress/slider gradient** and a sleek, slim **theme-specific scrollbar**
 - **Typography** — font family, size, line spacing, **text alignment** (left/center/right/
   justify), **hyphenation**, and **4 independent margins** (top/right/bottom/left); trailing
   space in scroll mode so the end isn't glued to the edge
@@ -99,6 +125,10 @@ local-first, open, and supports **continuous scroll** as well as classic paginat
   can't float over other apps on iPhone/iPad.
 - Opening books from **Google Drive** (or any cloud) already works through the system file
   picker / "Open with" — the file is copied into the library on open.
+- **Cloud sync needs your own OAuth client ids** (free) — create them in Google Cloud Console
+  and paste them into `SYNC_CONFIG` in [`src/cloud.ts`](src/cloud.ts); see the comments there.
+- **Unsupported (for now):** binary document formats like **DOCX, CBR (RAR comics), DjVu** —
+  those need heavy converters/WASM. Plain-text and source formats are all covered by the viewer.
 
 ---
 

@@ -11,6 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+
+# Playwright debug artifacts
+.playwright-mcp/
 
 # Editor directories and files
 .vscode/*

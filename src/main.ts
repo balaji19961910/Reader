@@ -15,9 +15,13 @@ import {
   getAudioTracks,
   getBook,
   setAudioMap,
+  getFolders,
   getLastOpened,
   listBooks,
+  saveFolders,
   loadAudioPos,
+  loadAudioContinuous,
+  saveAudioContinuous,
   loadSettings,
   saveAudioPos,
   saveBook,
@@ -25,7 +29,39 @@ import {
   setAudioBlob,
   setAudioTracks,
   setLastOpened,
+  swapAudio,
 } from "./db";
+import { applyPendingState, exportBackup, importBackup } from "./sync";
+import {
+  activeProvider,
+  allProviders,
+  ensureBookData,
+  evictOldBooks,
+  fullSync,
+  isCloudSynced,
+  isSyncing,
+  lastSynced,
+  loadSyncSettings,
+  markDirty,
+  removeBookFromCloud,
+  saveSyncSettings,
+  setCloudSynced,
+  setLibraryChangedHandler,
+  setSyncProgressHandler,
+  syncLibrary,
+  syncOnFocus,
+  type SyncItem,
+} from "./cloud";
+import { registerGoogleDrive } from "./gdrive";
+import {
+  destroyCode,
+  getCode,
+  isTextFile,
+  mountCode,
+  renderInto,
+  viewKind,
+  type ViewKind,
+} from "./codeview";
 import {
   desktopAvailable,
   getPendingFiles,
@@ -70,6 +106,7 @@ const tocList = $("#toc-list");
 const searchEl = $("#search");
 const detailsEl = $("#details");
 const helpEl = $("#help");
+const codeviewEl = $("#codeview");
 const PLATFORM = platform();
 
 // ---- State ----
@@ -255,6 +292,7 @@ async function saveMarks() {
   rec.bookmarks = bookmarks;
   rec.annotations = annotations;
   await saveBook(rec);
+  markDirty();
 }
 
 // Re-draw stored highlights (called when a section's overlay is created).
@@ -1041,6 +1079,7 @@ function syncHlEditor() {
   $<HTMLSelectElement>("#hl-fontstyle").value = s.fontStyle;
   $<HTMLSelectElement>("#hl-fontweight").value = String(s.fontWeight);
   $<HTMLInputElement>("#hl-strike").checked = s.strike;
+  initRangeFills($("#hl-style-sheet"));
   updateHlPreview();
 }
 
@@ -1234,7 +1273,8 @@ function onBlockEnd() {
     /* ignore */
   }
   if (next) speakSSML(next);
-  else advanceSection();
+  else if (settings.autoAdvance) advanceSection();
+  else stopTTS();
 }
 
 let advancing = false;
@@ -1375,17 +1415,35 @@ function updatePlayPauseIcon() {
 
 function showPlayer(mode: "tts" | "audio") {
   playerMode = mode;
-  $("#player-bar").hidden = false;
-  $("#pb-speed-btn").textContent = (mode === "audio" ? audioRate : settings.ttsRate) + "×";
+  const bar = $("#player-bar");
+  bar.hidden = false;
+  // TTS = simple single bar (stop + speed inline); audiobook = 4 buttons + more sheet
+  bar.classList.toggle("mode-tts", mode === "tts");
+  bar.classList.toggle("mode-audio", mode === "audio");
+  setSpeedLabel(mode === "audio" ? audioRate : settings.ttsRate);
   if (mode === "tts") {
     $("#pb-cur").textContent = "0%";
     $("#pb-dur").textContent = "";
   }
+  const isAudioQueue = mode === "audio" && audioNames.length > 1;
+  $("#pb-queue-wrap").hidden = !isAudioQueue;
+  syncRepeatUi();
   updatePlayPauseIcon();
+}
+
+// the speed value shows on both the TTS pill and the audiobook "more" chip
+function setSpeedLabel(v: number) {
+  const t = (Number.isInteger(v) ? v : +v.toFixed(2)) + "×";
+  const a = document.getElementById("pb-speed-label");
+  const b = document.getElementById("pm-speed-label");
+  if (a) a.textContent = t;
+  if (b) b.textContent = t;
 }
 
 function hidePlayer() {
   $("#player-bar").hidden = true;
+  $("#queue-sheet").hidden = true;
+  $("#player-more").hidden = true;
   playerMode = null;
 }
 
@@ -1397,6 +1455,9 @@ const audioEl = $<HTMLAudioElement>("#audio-el");
 let audioNames: string[] = [];
 let audioMap: number[] = []; // track index → chapter index
 let audioTrack = 0;
+let audioContinuous = false; // per-book: play as a queue, ignore chapter map
+let audioCover = ""; // book cover, used as queue "album art"
+const trackDurations: (number | undefined)[] = []; // lazily filled for the list
 
 // distribute N tracks across C chapters in order (used when no map is saved)
 function defaultAudioMap(nTracks: number, nChapters: number): number[] {
@@ -1439,13 +1500,47 @@ function tocTop(): { label: string; href: string; depth: number }[] {
   return flattenToc(view?.book?.toc);
 }
 
-// move the text to the chapter this track is mapped to
+// move the text to the chapter this track is mapped to. Off in continuous mode,
+// and off when the user has disabled auto-advance (text shouldn't follow audio).
 function syncTextToTrack(i: number) {
+  if (audioContinuous || !settings.autoAdvance) return;
   const toc = tocTop();
   const ch = audioMap[i];
-  if (ch != null && ch >= 0 && toc[ch]?.href) {
-    view?.goTo(toc[ch].href).catch(() => {});
+  if (ch == null || ch < 0 || !toc[ch]?.href) return;
+  // don't jump if the reader is already in that chapter
+  if (currentChapterIndex() === ch) return;
+  view?.goTo(toc[ch].href).catch(() => {});
+}
+
+// Index (in the flattened TOC) of the chapter the reader is currently in.
+function currentChapterIndex(): number {
+  const toc = tocTop();
+  const cur = (view as any)?.lastLocation?.tocItem;
+  const href = cur?.href as string | undefined;
+  if (href) {
+    let i = toc.findIndex((t) => t.href === href);
+    if (i < 0) {
+      const bare = href.split("#")[0];
+      i = toc.findIndex((t) => (t.href || "").split("#")[0] === bare);
+    }
+    if (i >= 0) return i;
   }
+  return 0;
+}
+
+// The audio track mapped to a chapter — exact match, else the closest preceding.
+function trackForChapter(ch: number): number {
+  const exact = audioMap.indexOf(ch);
+  if (exact >= 0) return exact;
+  let best = 0;
+  let bestCh = -1;
+  for (let i = 0; i < audioMap.length; i++) {
+    if (audioMap[i] <= ch && audioMap[i] > bestCh) {
+      bestCh = audioMap[i];
+      best = i;
+    }
+  }
+  return best;
 }
 
 const AUDIO_RE = /\.(m4b|m4a|mp4|mp3|aac|ogg|oga|opus|wav|flac)$/i;
@@ -1479,13 +1574,34 @@ async function importAudio(files: File[]) {
   openAudiobook();
 }
 
-async function playTrack(i: number, time = 0, autoplay = true) {
+// Per-file resume positions (seconds), keyed by track index.
+function trackTimes(id: string): number[] {
+  try {
+    return JSON.parse(localStorage.getItem(`audioTimes:${id}`) || "[]");
+  } catch {
+    return [];
+  }
+}
+function setTrackTime(id: string, i: number, t: number): void {
+  const a = trackTimes(id);
+  a[i] = t;
+  localStorage.setItem(`audioTimes:${id}`, JSON.stringify(a));
+}
+let audioResume = localStorage.getItem("audioResume") !== "0";
+
+// time === undefined → resume this file where it was left off (if enabled).
+async function playTrack(i: number, time?: number, autoplay = true) {
   if (!currentId) return;
   if (i < 0 || i >= audioNames.length) {
     stopAudio();
     return;
   }
+  // remember where we were in the file we're leaving
+  if (audioActive && audioTrack !== i && audioEl.currentTime > 0)
+    setTrackTime(currentId, audioTrack, audioEl.currentTime);
+  const startAt = time != null ? time : audioResume ? trackTimes(currentId)[i] || 0 : 0;
   audioTrack = i;
+  updateQueueCurrent(i);
   const blob = await getAudioBlob(currentId, i);
   if (!blob) return;
   if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -1501,7 +1617,7 @@ async function playTrack(i: number, time = 0, autoplay = true) {
   setMediaMetadata(audioNames.length > 1 ? `${i + 1}. ${label}` : label);
   const begin = () => {
     try {
-      if (time) audioEl.currentTime = time;
+      if (startAt) audioEl.currentTime = startAt;
     } catch {
       /* ignore */
     }
@@ -1519,10 +1635,29 @@ async function openAudiobook() {
     return;
   }
   stopTTS();
+  audioContinuous = loadAudioContinuous(currentId);
+  await loadAudioCover();
   audioActive = true;
   showPlayer("audio");
-  const pos = loadAudioPos(currentId);
-  await playTrack(Math.min(pos.track, audioNames.length - 1), pos.time, true);
+
+  // which file to start on; the per-file resume position is applied by playTrack
+  const track = audioContinuous
+    ? Math.min(loadAudioPos(currentId).track, audioNames.length - 1) // standalone queue
+    : trackForChapter(currentChapterIndex()); // chapter the reader is in
+  renderQueue();
+  await playTrack(track);
+}
+
+// Cache the open book's cover (used as the queue's "album art").
+async function loadAudioCover() {
+  audioCover = "";
+  if (!currentId) return;
+  try {
+    const rec = await getBook(currentId);
+    audioCover = rec?.cover || "";
+  } catch {
+    /* ignore */
+  }
 }
 
 function stopAudio() {
@@ -1534,21 +1669,193 @@ function stopAudio() {
 }
 
 function persistAudioPos() {
-  if (currentId && audioActive)
+  if (currentId && audioActive) {
     saveAudioPos(currentId, { track: audioTrack, time: audioEl.currentTime });
+    setTrackTime(currentId, audioTrack, audioEl.currentTime); // per-file resume
+    markDirty();
+  }
+}
+
+// ---- Audio queue (horizontal strip + expandable list) --------------------
+
+// Display name for a track: chapter title when 1:1, else the file name.
+function trackLabel(i: number): string {
+  const toc = tocTop();
+  if (toc.length === audioNames.length && toc[i]?.label) return toc[i].label.trim();
+  return audioNames[i] || `Track ${i + 1}`;
+}
+
+function queueArt(cls: string): string {
+  return audioCover
+    ? `<img class="${cls}" src="${audioCover}" alt="" />`
+    : `<div class="${cls} q-art-ph">🎧</div>`;
+}
+
+function renderQueue() {
+  const wrap = $("#pb-queue");
+  if (audioNames.length <= 1) {
+    wrap.innerHTML = "";
+    return;
+  }
+  wrap.innerHTML = audioNames
+    .map(
+      (_, i) => `
+      <button class="q-card${i === audioTrack ? " current" : ""}" data-i="${i}" title="${escapeHtml(audioNames[i])}">
+        ${queueArt("q-art")}
+        <div class="q-name"><span>${escapeHtml(trackLabel(i))}</span></div>
+      </button>`,
+    )
+    .join("");
+  requestAnimationFrame(() => {
+    centerQueueCard(audioTrack, false);
+    applyMarquee();
+  });
+}
+
+function centerQueueCard(i: number, smooth: boolean) {
+  const wrap = $("#pb-queue");
+  const card = wrap.querySelector<HTMLElement>(`.q-card[data-i="${i}"]`);
+  if (!card) return;
+  const left = card.offsetLeft - (wrap.clientWidth - card.clientWidth) / 2;
+  wrap.scrollTo({ left: Math.max(0, left), behavior: smooth ? "smooth" : "auto" });
+}
+
+// Marquee the current card's name only when it overflows.
+function applyMarquee() {
+  const name = $("#pb-queue").querySelector<HTMLElement>(".q-card.current .q-name");
+  if (!name) return;
+  const span = name.firstElementChild as HTMLElement | null;
+  name.classList.remove("marquee");
+  if (span && span.scrollWidth > name.clientWidth + 2) {
+    name.style.setProperty("--shift", `${name.clientWidth - span.scrollWidth - 6}px`);
+    name.classList.add("marquee");
+  }
+}
+
+function updateQueueCurrent(i: number) {
+  $("#pb-queue")
+    .querySelectorAll<HTMLElement>(".q-card")
+    .forEach((c) => c.classList.toggle("current", Number(c.dataset.i) === i));
+  centerQueueCard(i, true);
+  requestAnimationFrame(applyMarquee);
+  $("#queue-list")
+    .querySelectorAll<HTMLElement>(".q-row")
+    .forEach((r) => r.classList.toggle("current", Number(r.dataset.i) === i));
+}
+
+function openQueueSheet() {
+  $<HTMLInputElement>("#q-continuous").checked = audioContinuous;
+  renderQueueList();
+  $("#queue-sheet").hidden = false;
+  loadTrackDurations();
+}
+
+function renderQueueList() {
+  $("#queue-list").innerHTML = audioNames
+    .map((name, i) => {
+      const main = trackLabel(i);
+      const sub = name !== main ? `<div class="q-row-sub">${escapeHtml(name)}</div>` : "";
+      const dur = trackDurations[i] != null ? fmtTime(trackDurations[i]!) : "…";
+      return `
+      <button class="q-row${i === audioTrack ? " current" : ""}" data-i="${i}">
+        ${queueArt("q-row-art")}
+        <div class="q-row-main">
+          <div class="q-row-name">${escapeHtml(main)}</div>
+          ${sub}
+        </div>
+        <div class="q-row-dur" data-dur="${i}">${dur}</div>
+      </button>`;
+    })
+    .join("");
+}
+
+function readDuration(blob: Blob): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio();
+    a.preload = "metadata";
+    a.onloadedmetadata = () => {
+      const d = a.duration;
+      URL.revokeObjectURL(url);
+      resolve(isFinite(d) && d > 0 ? d : undefined);
+    };
+    a.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(undefined);
+    };
+    a.src = url;
+  });
+}
+
+let durLoading = false;
+// Fill track durations lazily (sequential, so 40+ files don't all decode at once).
+async function loadTrackDurations() {
+  if (durLoading || !currentId) return;
+  durLoading = true;
+  const id = currentId;
+  try {
+    for (let i = 0; i < audioNames.length; i++) {
+      if ($("#queue-sheet").hidden || id !== currentId) break;
+      if (trackDurations[i] != null) continue;
+      const blob = await getAudioBlob(id, i);
+      if (!blob) continue;
+      trackDurations[i] = await readDuration(blob);
+      const cell = document.querySelector(`#queue-list .q-row-dur[data-dur="${i}"]`);
+      if (cell) cell.textContent = trackDurations[i] != null ? fmtTime(trackDurations[i]!) : "—";
+    }
+  } finally {
+    durLoading = false;
+  }
+}
+
+function wireQueueSheet() {
+  $("#queue-close").addEventListener("click", () => ($("#queue-sheet").hidden = true));
+  $("#queue-sheet").addEventListener("click", (e) => {
+    if (e.target === $("#queue-sheet")) $("#queue-sheet").hidden = true;
+  });
+  $<HTMLInputElement>("#q-continuous").addEventListener("change", (e) => {
+    audioContinuous = (e.target as HTMLInputElement).checked;
+    if (currentId) saveAudioContinuous(currentId, audioContinuous);
+    markDirty();
+  });
+  $("#pb-queue").addEventListener("click", (e) => {
+    const card = (e.target as HTMLElement).closest?.(".q-card") as HTMLElement | null;
+    if (card) playTrack(Number(card.dataset.i)); // resume that file (if enabled)
+  });
+  $("#queue-list").addEventListener("click", (e) => {
+    const row = (e.target as HTMLElement).closest?.(".q-row") as HTMLElement | null;
+    if (row) playTrack(Number(row.dataset.i));
+  });
 }
 
 function wireAudio() {
   audioEl.addEventListener("play", updatePlayPauseIcon);
   audioEl.addEventListener("pause", updatePlayPauseIcon);
-  audioEl.addEventListener("ended", () => playTrack(audioTrack + 1));
+  audioEl.addEventListener("ended", () => {
+    if (repeatMode === "one") {
+      playTrack(audioTrack, 0); // replay the same file
+      return;
+    }
+    let next = audioTrack + 1;
+    if (next >= audioNames.length) {
+      if (repeatMode === "all") next = 0; // loop the queue
+      else return void persistAudioPos();
+    }
+    // another file mapped to the SAME chapter always continues; crossing into a
+    // different chapter's audio only continues when auto-advance is on.
+    const sameChapter =
+      audioMap[next] != null && audioMap[next] >= 0 && audioMap[next] === audioMap[audioTrack];
+    if (repeatMode === "all" || audioContinuous || settings.autoAdvance || sameChapter)
+      playTrack(next);
+    else persistAudioPos();
+  });
   audioEl.addEventListener("timeupdate", () => {
     if (playerMode !== "audio") return;
     const d = audioEl.duration || 0;
     if (d) {
-      $<HTMLInputElement>("#pb-seek").value = String(
-        Math.round((audioEl.currentTime / d) * 1000),
-      );
+      const seek = $<HTMLInputElement>("#pb-seek");
+      seek.value = String(Math.round((audioEl.currentTime / d) * 1000));
+      updateRangeFill(seek);
     }
     $("#pb-cur").textContent = fmtTime(audioEl.currentTime);
     $("#pb-dur").textContent = fmtTime(d);
@@ -1743,13 +2050,91 @@ function setupMediaSession() {
   set("nexttrack", playerNext);
 }
 
+// Paint the filled portion of a range input (WebKit has no native progress fill).
+function updateRangeFill(el: HTMLInputElement) {
+  const min = parseFloat(el.min || "0");
+  const max = parseFloat(el.max || "100");
+  const v = parseFloat(el.value || "0");
+  const pct = max > min ? ((v - min) / (max - min)) * 100 : 0;
+  el.style.setProperty("--pct", `${Math.max(0, Math.min(100, pct))}%`);
+}
+
+// Refresh the coloured fill on every range input currently in the DOM.
+function initRangeFills(root: ParentNode = document) {
+  root.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(updateRangeFill);
+}
+
+// --- Repeat mode (audiobook) ---------------------------------------------
+type RepeatMode = "none" | "one" | "all";
+let repeatMode: RepeatMode =
+  (localStorage.getItem("audioRepeat") as RepeatMode) || "none";
+
+const REPEAT_ICON: Record<RepeatMode, string> = {
+  none: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z",
+  all: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z",
+  one: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z",
+};
+const REPEAT_LABEL: Record<RepeatMode, string> = {
+  none: "No repeat",
+  all: "Repeat all",
+  one: "Repeat one",
+};
+
+function syncRepeatUi() {
+  const btn = $("#pb-repeat");
+  const svg = btn.querySelector("svg path");
+  if (svg) svg.setAttribute("d", REPEAT_ICON[repeatMode]);
+  btn.classList.toggle("on", repeatMode !== "none");
+  $("#pb-repeat-label").textContent = REPEAT_LABEL[repeatMode];
+}
+
+function cycleRepeat() {
+  repeatMode = repeatMode === "none" ? "all" : repeatMode === "all" ? "one" : "none";
+  localStorage.setItem("audioRepeat", repeatMode);
+  syncRepeatUi();
+}
+
+function closePlayerMore() {
+  $("#player-more").hidden = true;
+}
+
 function wirePlayer() {
   wireAudio();
   setupMediaSession();
+  // keep every slider's coloured fill in sync as it changes
+  document.addEventListener("input", (e) => {
+    const t = e.target as HTMLElement;
+    if (t instanceof HTMLInputElement && t.type === "range") updateRangeFill(t);
+  });
   $("#pb-play").addEventListener("click", playerTogglePlay);
   $("#pb-back").addEventListener("click", playerBack);
   $("#pb-fwd").addEventListener("click", playerFwd);
-  $("#pb-stop").addEventListener("click", playerStop);
+  $("#pb-stop").addEventListener("click", playerStop); // TTS bar
+  $("#pb-prev").addEventListener("click", playerPrev);
+  $("#pb-next").addEventListener("click", playerNext);
+  $("#pb-queue-expand").addEventListener("click", openQueueSheet);
+  wireQueueSheet();
+
+  // audiobook "more" sheet: repeat + speed (row 1), prev/stop/next (row 2), resume
+  $("#pb-more").addEventListener("click", () => {
+    syncRepeatUi();
+    $<HTMLInputElement>("#pm-resume").checked = audioResume;
+    $("#player-more").hidden = false;
+  });
+  $("#pm-close").addEventListener("click", closePlayerMore);
+  $("#player-more").addEventListener("click", (e) => {
+    if (e.target === $("#player-more")) closePlayerMore();
+  });
+  $("#pm-stop").addEventListener("click", () => {
+    closePlayerMore();
+    playerStop();
+  });
+  $("#pm-speed").addEventListener("click", openSpeedMenu);
+  $("#pb-repeat").addEventListener("click", cycleRepeat);
+  $<HTMLInputElement>("#pm-resume").addEventListener("change", (e) => {
+    audioResume = (e.target as HTMLInputElement).checked;
+    localStorage.setItem("audioResume", audioResume ? "1" : "0");
+  });
   $<HTMLInputElement>("#pb-seek").addEventListener("input", (e) => {
     const frac = Number((e.target as HTMLInputElement).value) / 1000;
     if (playerMode === "audio") {
@@ -1763,15 +2148,15 @@ function wirePlayer() {
   // compact speed: a pill that opens the YouTube-style speed sheet
   $("#pb-speed-btn").addEventListener("click", openSpeedMenu);
   const slider = $<HTMLInputElement>("#ss-slider");
-  // live update while dragging (no commit churn until release)
-  slider.addEventListener("input", () => previewSpeed(parseFloat(slider.value) || 1));
-  slider.addEventListener("change", () => setSpeed(parseFloat(slider.value) || 1));
-  $("#ss-minus").addEventListener("click", () => nudgeSpeed(-0.05));
-  $("#ss-plus").addEventListener("click", () => nudgeSpeed(0.05));
+  // slider runs in position-space (0..1000); speed is exponential off it
+  slider.addEventListener("input", () => previewSpeed(posToSpeed(+slider.value)));
+  slider.addEventListener("change", () => setSpeed(posToSpeed(+slider.value)));
+  $("#ss-minus").addEventListener("click", () => nudgeSpeedPos(-30));
+  $("#ss-plus").addEventListener("click", () => nudgeSpeedPos(30));
   document.querySelectorAll<HTMLElement>("#speed-sheet .ss-presets button").forEach((b) =>
     b.addEventListener("click", () => setSpeed(parseFloat(b.dataset.rate || "1") || 1)),
   );
-  $("#ss-done").addEventListener("click", closeSpeedMenu);
+  $("#ss-close").addEventListener("click", closeSpeedMenu);
   $("#speed-sheet").addEventListener("click", (e) => {
     if (e.target === $("#speed-sheet")) closeSpeedMenu();
   });
@@ -1784,16 +2169,38 @@ function currentSpeed(): number {
 // Reflect a speed value in the sheet UI without committing to the engine.
 function previewSpeed(v: number) {
   $("#ss-value").textContent = v.toFixed(2);
-  $("#pb-speed-btn").textContent = (Number.isInteger(v) ? v : +v.toFixed(2)) + "×";
+  setSpeedLabel(v);
 }
 
-function nudgeSpeed(delta: number) {
-  const v = Math.round(Math.min(3, Math.max(0.25, currentSpeed() + delta)) * 100) / 100;
-  setSpeed(v);
+// Exponential speed slider: position 0..1000 maps to 0.05x .. 1x (middle) .. 10x.
+// Two log segments so 1x sits exactly at the centre.
+const SPEED_MIN = 0.05;
+const SPEED_MAX = 10;
+function posToSpeed(pos: number): number {
+  const t = Math.max(0, Math.min(1, pos / 1000));
+  const v =
+    t <= 0.5
+      ? SPEED_MIN * Math.pow(1 / SPEED_MIN, t * 2) // 0.05 → 1
+      : Math.pow(SPEED_MAX, (t - 0.5) * 2); //         1 → 10
+  return Math.round(v * 100) / 100;
+}
+function speedToPos(v: number): number {
+  v = Math.max(SPEED_MIN, Math.min(SPEED_MAX, v));
+  const t =
+    v <= 1
+      ? 0.5 * (Math.log(v / SPEED_MIN) / Math.log(1 / SPEED_MIN))
+      : 0.5 + 0.5 * (Math.log10(v) / Math.log10(SPEED_MAX));
+  return Math.round(t * 1000);
+}
+
+function nudgeSpeedPos(deltaPos: number) {
+  const slider = $<HTMLInputElement>("#ss-slider");
+  const pos = Math.max(0, Math.min(1000, +slider.value + deltaPos));
+  setSpeed(posToSpeed(pos));
 }
 
 function setSpeed(v: number) {
-  v = Math.round(Math.min(3, Math.max(0.25, v)) * 100) / 100;
+  v = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, v)) * 100) / 100;
   if (playerMode === "audio") {
     audioRate = v;
     audioEl.playbackRate = v;
@@ -1806,14 +2213,17 @@ function setSpeed(v: number) {
       speakSSML(view.tts.resume());
     }
   }
-  $<HTMLInputElement>("#ss-slider").value = String(v);
+  const slider = $<HTMLInputElement>("#ss-slider");
+  slider.value = String(speedToPos(v));
+  updateRangeFill(slider);
   previewSpeed(v);
 }
 
 function openSpeedMenu() {
-  const v = currentSpeed();
-  $<HTMLInputElement>("#ss-slider").value = String(v);
-  previewSpeed(v);
+  const slider = $<HTMLInputElement>("#ss-slider");
+  slider.value = String(speedToPos(currentSpeed()));
+  updateRangeFill(slider);
+  previewSpeed(currentSpeed());
   $("#speed-sheet").hidden = false;
 }
 function closeSpeedMenu() {
@@ -1899,9 +2309,31 @@ function contentCSS(s: Settings): string {
     a:link, a:visited { color: ${ACCENT}; }
     img { max-width: 100%; height: auto; }
     .reader-tts-hl { border-radius: 2px; }
+    html { scrollbar-width: thin; scrollbar-color: rgba(127,127,127,0.45) transparent; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      border-radius: 8px;
+      background: ${THEME_SCROLLBAR[settings.theme] || THEME_SCROLLBAR.light};
+      background-clip: padding-box;
+      border: 2px solid transparent;
+    }
     ${trail}
   `;
 }
+
+// Per-theme scrollbar thumb tone (mirrors --scroll-thumb in styles.css) so the
+// reader iframe's scrollbar matches the app — distinct from the seek gradient.
+const THEME_SCROLLBAR: Record<string, string> = {
+  light: "rgba(45, 212, 191, 0.6)",
+  paper: "rgba(100, 116, 139, 0.5)",
+  sepia: "rgba(120, 53, 15, 0.45)",
+  gray: "rgba(71, 85, 105, 0.55)",
+  dark: "rgba(148, 163, 184, 0.5)",
+  nord: "rgba(216, 222, 233, 0.4)",
+  solarizeddark: "rgba(147, 161, 161, 0.45)",
+  black: "rgba(130, 130, 130, 0.55)",
+};
 
 // @font-face for the currently-selected bundled font (loaded lazily, base64).
 let bundledFontFace = "";
@@ -1937,10 +2369,32 @@ function applyFlow() {
 }
 
 async function openBook(record: BookRecord) {
+  // freed-up book? fetch its bytes back from the cloud before opening
+  if (record.evicted || (isCloudSynced(record.id) && !record.data.byteLength)) {
+    bookTitleEl.textContent = "Fetching from cloud…";
+    const ok = await ensureBookData(record.id);
+    if (!ok) {
+      alert("Couldn't fetch this book from the cloud. Connect & sync, then try again.");
+      return;
+    }
+    record = (await getBook(record.id)) || record;
+  }
+  // text / code / markdown files open in the universal viewer, not the reader
+  if (isTextFile(record.fileName)) {
+    const text = new TextDecoder().decode(record.data);
+    openTextFile(record.fileName, text, record.id.startsWith("once:") ? null : record.id);
+    return;
+  }
   stopTTS();
   stopAudio();
+  // a prior sync may have stashed state for this book before it existed locally
+  if (await applyPendingState(record.id)) {
+    record = (await getBook(record.id)) || record;
+  }
   audioNames = await getAudioTracks(record.id);
   audioTrack = 0;
+  trackDurations.length = 0;
+  audioContinuous = loadAudioContinuous(record.id);
   // tear down any existing view
   if (view) {
     try {
@@ -2076,6 +2530,7 @@ function persistPosition(cfi: string, progress: number) {
     rec.progress = progress;
     rec.lastOpened = Date.now();
     await saveBook(rec);
+    markDirty();
   }, 400);
 }
 
@@ -2113,6 +2568,136 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 // ---------------------------------------------------------------------------
 // Importing books
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Universal text / code viewer
+// ---------------------------------------------------------------------------
+
+let cvFile = "";
+let cvText = "";
+let cvKind: ViewKind = "code";
+let cvBookId: string | null = null;
+let cvView: "rendered" | "source" = "source";
+
+function openTextFile(fileName: string, text: string, bookId: string | null) {
+  stopTTS();
+  stopAudio();
+  cvFile = fileName;
+  cvText = text;
+  cvKind = viewKind(fileName);
+  cvBookId = bookId;
+  cvView = cvKind === "code" ? "source" : "rendered";
+  $("#cv-title").textContent = fileName;
+  $("#cv-toggle").hidden = cvKind === "code"; // only md/html get a rendered view
+  $("#cv-save").hidden = false;
+  openOverlay(codeviewEl);
+  renderCodeView();
+}
+
+function renderCodeView() {
+  const rendered = $("#cv-rendered-wrap");
+  const source = $("#cv-source");
+  document
+    .querySelectorAll<HTMLElement>("#cv-toggle .cv-seg")
+    .forEach((b) => b.classList.toggle("on", b.dataset.view === cvView));
+  if (cvView === "rendered") {
+    destroyCode();
+    source.hidden = true;
+    rendered.hidden = false;
+    renderInto($<HTMLIFrameElement>("#cv-rendered"), cvText, cvKind);
+  } else {
+    rendered.hidden = true;
+    source.hidden = false;
+    source.innerHTML = "";
+    void mountCode(source, cvText, cvFile);
+  }
+}
+
+async function saveCodeView() {
+  if (cvView === "source") cvText = getCode();
+  if (cvBookId) {
+    const rec = await getBook(cvBookId);
+    if (rec) {
+      rec.data = new TextEncoder().encode(cvText).buffer as ArrayBuffer;
+      await saveBook(rec);
+      $("#cv-save").title = "Saved ✓";
+      window.setTimeout(() => ($("#cv-save").title = "Save"), 2000);
+    }
+  } else {
+    const blob = new Blob([cvText], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = cvFile;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+}
+
+function wireCodeView() {
+  $("#cv-back").addEventListener("click", () => {
+    destroyCode();
+    openLibrary();
+  });
+  $("#cv-save").addEventListener("click", saveCodeView);
+  document.querySelectorAll<HTMLElement>("#cv-toggle .cv-seg").forEach((b) =>
+    b.addEventListener("click", () => {
+      const next = b.dataset.view as "rendered" | "source";
+      if (next === cvView) return;
+      if (cvView === "source") cvText = getCode(); // keep edits when switching away
+      cvView = next;
+      renderCodeView();
+    }),
+  );
+  // open-mode chooser
+  $("#om-add").addEventListener("click", () => {
+    $("#open-mode-sheet").hidden = true;
+    if (pendingOpen) void importBytes(pendingOpen.fileName, pendingOpen.data, true);
+    pendingOpen = null;
+  });
+  $("#om-once").addEventListener("click", () => {
+    $("#open-mode-sheet").hidden = true;
+    if (pendingOpen) void openTransient(pendingOpen.fileName, pendingOpen.data);
+    pendingOpen = null;
+  });
+  $("#om-cancel").addEventListener("click", () => {
+    $("#open-mode-sheet").hidden = true;
+    pendingOpen = null;
+  });
+  $("#open-mode-sheet").addEventListener("click", (e) => {
+    if (e.target === $("#open-mode-sheet")) {
+      $("#open-mode-sheet").hidden = true;
+      pendingOpen = null;
+    }
+  });
+}
+
+// Ask whether to add an opened file to the library or just view it once.
+let pendingOpen: { fileName: string; data: ArrayBuffer } | null = null;
+function chooseAndOpen(fileName: string, data: ArrayBuffer) {
+  pendingOpen = { fileName, data };
+  $("#om-title").textContent = fileName;
+  $("#om-note").textContent = isTextFile(fileName)
+    ? "Add it to your library, or just view it this once."
+    : "Add this to your library, or open it once without saving.";
+  $("#open-mode-sheet").hidden = false;
+}
+
+// View a file once without saving it to the library.
+async function openTransient(fileName: string, data: ArrayBuffer) {
+  if (isTextFile(fileName)) {
+    openTextFile(fileName, new TextDecoder().decode(data), null);
+    return;
+  }
+  await openBook({
+    id: `once:${fileName}-${data.byteLength}`,
+    fileName,
+    title: fileName.replace(/\.[^.]+$/, ""),
+    author: "",
+    data,
+    addedAt: Date.now(),
+    lastOpened: Date.now(),
+  } as BookRecord);
+}
 
 async function importFile(file: File, open = true) {
   await importBytes(file.name, await file.arrayBuffer(), open);
@@ -2154,6 +2739,7 @@ async function importBytes(fileName: string, data: ArrayBuffer, open = true) {
     author,
     cover,
     data,
+    folder: currentFolder, // land in the folder you're viewing
     addedAt: now,
     lastOpened: now,
   };
@@ -2162,38 +2748,95 @@ async function importBytes(fileName: string, data: ArrayBuffer, open = true) {
   if (open) await openBook(record);
 }
 
-// Open a book by filesystem path (from a file association / "Open with").
+// Open a file by filesystem path (from a file association / "Open with").
 async function openPath(path: string) {
   const data = await readFileBytes(path);
   if (!data) return;
   const name = path.split(/[\\/]/).pop() || "book";
-  await importBytes(name, data);
+  chooseAndOpen(name, data);
 }
 
 // ---------------------------------------------------------------------------
 // Library UI
 // ---------------------------------------------------------------------------
 
+let currentFolder = ""; // "" = root, else "Fiction/SciFi"
+
+const folderName = (path: string) => path.split("/").pop() || path;
+const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
+const childPath = (parent: string, name: string) => (parent ? `${parent}/${name}` : name);
+
+// immediate sub-folders of `parent`, from the explicit folder list + book folders
+function childFolders(parent: string, allFolders: string[], books: BookRecord[]): string[] {
+  const all = new Set(allFolders);
+  for (const b of books) if (b.folder) all.add(b.folder);
+  const prefix = parent ? parent + "/" : "";
+  const kids = new Set<string>();
+  for (const f of all) {
+    if (parent ? f.startsWith(prefix) && f !== parent : true) {
+      const rest = parent ? f.slice(prefix.length) : f;
+      if (rest) kids.add(prefix + rest.split("/")[0]);
+    }
+  }
+  return [...kids].sort();
+}
+
 async function refreshLibrary() {
   const books = await listBooks();
-  bookGrid.querySelectorAll(".book-card").forEach((n) => n.remove());
-  emptyHint.style.display = books.length ? "none" : "block";
+  const folders = await getFolders();
+  bookGrid.querySelectorAll(".book-card, .folder-card").forEach((n) => n.remove());
 
-  for (const b of books) {
+  renderCrumbs();
+  const subfolders = childFolders(currentFolder, folders, books);
+  const here = books.filter((b) => (b.folder || "") === currentFolder);
+  emptyHint.style.display = subfolders.length || here.length ? "none" : "block";
+
+  // folder cards first
+  for (const path of subfolders) {
+    const count = books.filter((b) => (b.folder || "") === path || b.folder?.startsWith(path + "/")).length;
+    const card = document.createElement("div");
+    card.className = "folder-card";
+    card.innerHTML = `
+      <div class="folder-ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg></div>
+      <div class="folder-name">${escapeHtml(folderName(path))}</div>
+      <div class="folder-count">${count} item${count === 1 ? "" : "s"}</div>
+      <button class="f-ren" title="Rename">✎</button>
+      <button class="f-del" title="Delete folder">🗑</button>`;
+    card.addEventListener("click", () => {
+      currentFolder = path;
+      refreshLibrary();
+    });
+    card.querySelector(".f-ren")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void renameFolder(path);
+    });
+    card.querySelector(".f-del")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void deleteFolder(path);
+    });
+    bookGrid.appendChild(card);
+  }
+
+  // then books in this folder
+  for (const b of here) {
     const card = document.createElement("div");
     card.className = "book-card";
+    const cloudBadge = b.evicted
+      ? `<span class="cloud-badge" title="In the cloud — tap to download"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg></span>`
+      : "";
     card.innerHTML = `
       <div class="cover">${
         b.cover
           ? `<img src="${b.cover}" alt="" />`
           : `<span>${escapeHtml(b.title)}</span>`
-      }</div>
+      }${cloudBadge}</div>
       <div class="meta">
         <div class="t">${escapeHtml(b.title)}</div>
         <div class="a">${escapeHtml(b.author)}</div>
         <div class="bar"><span style="width:${Math.round((b.progress ?? 0) * 100)}%"></span></div>
       </div>
       <button class="info" title="Details"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg></button>
+      <button class="cloud-toggle ${isCloudSynced(b.id) ? "on" : ""}" title="${isCloudSynced(b.id) ? "In cloud library — tap to remove" : "Add to cloud library"}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></button>
       <button class="del" title="Remove"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>`;
     card.querySelector(".cover")!.addEventListener("click", () => openBook(b));
     card.querySelector(".meta")!.addEventListener("click", () => openBook(b));
@@ -2201,6 +2844,9 @@ async function refreshLibrary() {
       e.stopPropagation();
       openDetails(b);
     });
+    card.querySelector(".cloud-toggle")!.addEventListener("click", (e) =>
+      toggleBookCloud(e, b),
+    );
     card.querySelector(".del")!.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (confirm(`Remove “${b.title}” from library?`)) {
@@ -2210,6 +2856,106 @@ async function refreshLibrary() {
     });
     bookGrid.appendChild(card);
   }
+}
+
+// Toggle a single book's cloud-library membership from its library card.
+async function toggleBookCloud(e: Event, b: BookRecord) {
+  e.stopPropagation();
+  const btn = e.currentTarget as HTMLButtonElement;
+  if (!activeProvider()?.isConnected()) {
+    alert("Connect a cloud account first — Library → ⟳ Sync.");
+    return;
+  }
+  btn.classList.add("busy");
+  try {
+    if (isCloudSynced(b.id)) {
+      await removeBookFromCloud(b.id);
+    } else {
+      setCloudSynced(b.id, true);
+      const r = await syncLibrary();
+      if (!r.ok) {
+        setCloudSynced(b.id, false);
+        alert("Couldn't add to cloud: " + r.message);
+      }
+    }
+  } finally {
+    await refreshLibrary();
+  }
+}
+
+function renderCrumbs() {
+  const nav = $("#lib-crumbs");
+  const parts = currentFolder ? currentFolder.split("/") : [];
+  const crumbs = [`<button class="crumb" data-path="">Library</button>`];
+  let acc = "";
+  for (const p of parts) {
+    acc = acc ? `${acc}/${p}` : p;
+    crumbs.push(`<span class="crumb-sep">›</span><button class="crumb" data-path="${escapeHtml(acc)}">${escapeHtml(p)}</button>`);
+  }
+  nav.innerHTML = crumbs.join("");
+  nav.querySelectorAll<HTMLElement>(".crumb").forEach((b) =>
+    b.addEventListener("click", () => {
+      currentFolder = b.dataset.path || "";
+      refreshLibrary();
+    }),
+  );
+}
+
+async function newFolder() {
+  const name = prompt("New folder name")?.trim();
+  if (!name) return;
+  const path = childPath(currentFolder, name.replace(/\//g, "-"));
+  const folders = await getFolders();
+  folders.push(path);
+  await saveFolders(folders);
+  refreshLibrary();
+}
+
+// Rename a folder and re-path every book + sub-folder beneath it.
+async function renameFolder(path: string) {
+  const name = prompt("Rename folder", folderName(path))?.trim();
+  if (!name) return;
+  const dest = childPath(parentOf(path), name.replace(/\//g, "-"));
+  if (dest === path) return;
+  const folders = (await getFolders()).map((f) =>
+    f === path || f.startsWith(path + "/") ? dest + f.slice(path.length) : f,
+  );
+  await saveFolders(folders);
+  for (const b of await listBooks()) {
+    if (b.folder === path || b.folder?.startsWith(path + "/")) {
+      b.folder = dest + b.folder.slice(path.length);
+      await saveBook(b);
+    }
+  }
+  if (currentFolder === path || currentFolder.startsWith(path + "/"))
+    currentFolder = dest + currentFolder.slice(path.length);
+  markDirty();
+  refreshLibrary();
+}
+
+// Delete a folder; its books + sub-folders move up to the parent.
+async function deleteFolder(path: string) {
+  if (!confirm(`Delete folder “${folderName(path)}”? Its books move to the parent folder.`)) return;
+  const parent = parentOf(path);
+  const folders = (await getFolders())
+    .filter((f) => f !== path && !f.startsWith(path + "/"))
+    .map((f) => f); // sub-folders are removed; their books move to parent
+  await saveFolders(folders);
+  for (const b of await listBooks()) {
+    if (b.folder === path || b.folder?.startsWith(path + "/")) {
+      b.folder = parent;
+      await saveBook(b);
+    }
+  }
+  if (currentFolder === path || currentFolder.startsWith(path + "/")) currentFolder = parent;
+  markDirty();
+  refreshLibrary();
+}
+
+// Library toolbar "Sync" button opens the sync sheet (all cloud controls live there).
+function openSyncSheet() {
+  refreshSyncUI();
+  $("#sync-sheet").hidden = false;
 }
 
 function escapeHtml(s: string) {
@@ -2331,11 +3077,13 @@ async function openDetails(rec: BookRecord) {
     console.error(e);
   }
   if (detailsId !== rec.id) return; // user navigated away while analysing
+
+  const folders = await getFolders();
   const tracks = await getAudioTracks(rec.id);
   let map = await getAudioMap(rec.id);
   if (map.length !== tracks.length)
     map = defaultAudioMap(tracks.length, stats.chapters.length);
-  renderDetails(rec, meta, stats, tracks, map);
+  renderDetails(rec, meta, stats, tracks, map, folders);
 }
 
 function chaptersHtml(
@@ -2368,6 +3116,7 @@ function renderDetails(
   stats: BookStats,
   tracks: string[],
   map: number[],
+  folders: string[],
 ) {
   const title = formatLangMap(meta.title) || rec.title;
   const author = formatContributor(meta.author) || rec.author;
@@ -2377,6 +3126,15 @@ function renderDetails(
   const size = (rec.data.byteLength / 1048576).toFixed(1) + " MB";
   const nChapters = stats.chapters.length;
   const num = (n: number) => n.toLocaleString();
+  const cur = rec.folder || "";
+  const folderOptions = ["", ...folders]
+    .map(
+      (f) =>
+        `<option value="${escapeHtml(f)}" ${f === cur ? "selected" : ""}>${
+          f ? escapeHtml(f) : "Library (root)"
+        }</option>`,
+    )
+    .join("");
 
   const audioStatus = !tracks.length
     ? "No audiobook linked."
@@ -2395,6 +3153,11 @@ function renderDetails(
     </div>
 
     <button id="d-edit" class="open-btn ghost d-edit-btn">✎ Edit title / author</button>
+
+    <div class="setting">
+      <label for="d-folder">Folder</label>
+      <select id="d-folder" class="sync-input">${folderOptions}</select>
+    </div>
 
     <div class="d-rows">
       <div><span>Format</span><b>${ext}</b></div>
@@ -2421,6 +3184,20 @@ function renderDetails(
           }</button>`
     }
 
+    <h3 class="group mark-head">Cloud library</h3>
+    <p class="d-note">${
+      isCloudSynced(rec.id)
+        ? "Kept in your cloud library — synced across your devices."
+        : "Not in the cloud. Add it to sync this book across your devices."
+    }</p>
+    <div class="d-audio-actions">
+      ${
+        isCloudSynced(rec.id)
+          ? `<button id="d-cloud-remove" class="open-btn danger">Remove from cloud</button>`
+          : `<button id="d-cloud-add" class="open-btn">☁ Add to cloud library</button>`
+      }
+    </div>
+
     <h3 class="group mark-head">Chapters</h3>
     <div class="d-chapters">${chaptersHtml(stats.chapters, tracks, map)}</div>
   `;
@@ -2429,6 +3206,11 @@ function renderDetails(
   body.querySelector("#d-edit")?.addEventListener("click", () =>
     renderEditMeta(rec, title, author),
   );
+  body.querySelector("#d-folder")?.addEventListener("change", async (e) => {
+    rec.folder = (e.target as HTMLSelectElement).value;
+    await saveBook(rec);
+    markDirty();
+  });
   body.querySelector("#d-add-audio")?.addEventListener("click", () => {
     audioImportTarget = "details";
     pickAudio();
@@ -2443,6 +3225,26 @@ function renderDetails(
       audioNames = [];
       stopAudio();
     }
+    openDetails(rec);
+  });
+  body.querySelector("#d-cloud-add")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    if (!activeProvider()?.isConnected()) {
+      alert("Connect a cloud account first (Library → ⟳ Sync).");
+      return;
+    }
+    setCloudSynced(rec.id, true);
+    btn.disabled = true;
+    btn.textContent = "Uploading…";
+    const r = await syncLibrary();
+    if (!r.ok) setCloudSynced(rec.id, false);
+    alert(r.ok ? "Added to your cloud library." : "Couldn't add: " + r.message);
+    openDetails(rec);
+  });
+  body.querySelector("#d-cloud-remove")?.addEventListener("click", async () => {
+    if (!confirm("Remove this book from the cloud? Your local copy stays.")) return;
+    const r = await removeBookFromCloud(rec.id);
+    alert(r.message);
     openDetails(rec);
   });
   body.querySelectorAll<HTMLElement>(".d-chapter").forEach((el) =>
@@ -2552,6 +3354,7 @@ function renderMapper(
   map: number[],
 ) {
   const opts = (sel: number) =>
+    `<option value="-1" ${sel < 0 ? "selected" : ""}>&mdash; Auto &mdash;</option>` +
     chapters
       .map((c, i) => {
         // indent nested chapters with figure spaces so the hierarchy reads in a <select>
@@ -2565,12 +3368,27 @@ function renderMapper(
     .map(
       (name, t) => `
       <div class="map-row">
+        <div class="map-reorder">
+          <button class="map-move" data-dir="-1" data-track="${t}" title="Move up" ${t === 0 ? "disabled" : ""}>&#9650;</button>
+          <button class="map-move" data-dir="1" data-track="${t}" title="Move down" ${t === tracks.length - 1 ? "disabled" : ""}>&#9660;</button>
+        </div>
         <div class="map-file">
           <span class="map-num">${t + 1}</span>
           <span class="map-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
         </div>
-        <select class="map-sel" data-track="${t}">${opts(map[t] ?? 0)}</select>
+        <select class="map-sel" data-track="${t}">${opts(map[t] ?? -1)}</select>
       </div>`,
+    )
+    .join("");
+
+  // checklist of chapters used as targets when auto-filling the "Auto" files
+  const checks = chapters
+    .map(
+      (c, i) => `
+      <label class="map-chk" style="padding-left:${4 + c.depth * 14}px">
+        <input type="checkbox" class="map-chk-box" data-ch="${i}" checked />
+        <span>${i + 1}. ${escapeHtml((c.label || "").trim() || "-")}</span>
+      </label>`,
     )
     .join("");
 
@@ -2578,32 +3396,83 @@ function renderMapper(
     <h3 class="group mark-head">Map audio → chapters</h3>
     <p class="d-note">Assign each audio file (top) to a book chapter (bottom). Several files can share one chapter.</p>
     <div class="map-actions">
-      <button id="map-even" class="open-btn ghost">Distribute evenly</button>
+      <button id="map-autofill" class="open-btn">Auto-fill the unmapped files</button>
+      <button id="map-even" class="open-btn ghost">Distribute all evenly</button>
     </div>
     <div class="map-head-row">
       <span class="map-head">🎵 Audio file</span>
       <span class="map-head">📖 Book chapter</span>
     </div>
     <div class="map-list">${rows}</div>
+    <details class="map-targets">
+      <summary>Chapters to include when auto-filling</summary>
+      <div class="map-chk-actions">
+        <button id="map-chk-all" class="open-btn ghost">All</button>
+        <button id="map-chk-none" class="open-btn ghost">None</button>
+      </div>
+      <div class="map-chk-list">${checks}</div>
+    </details>
     <div class="d-edit-actions">
       <button id="map-cancel" class="open-btn ghost">Cancel</button>
       <button id="map-save" class="open-btn">Save</button>
     </div>`;
 
+  const selects = () =>
+    [...document.querySelectorAll<HTMLSelectElement>("#details-body .map-sel")];
+  const currentMap = () => {
+    const m = [...map];
+    selects().forEach((s) => (m[Number(s.dataset.track)] = Number(s.value)));
+    return m;
+  };
+
+  // reorder: persist current edits + the swap, then re-render from storage
+  document.querySelectorAll<HTMLButtonElement>("#details-body .map-move").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const t = Number(b.dataset.track);
+      const j = t + Number(b.dataset.dir);
+      if (j < 0 || j >= tracks.length) return;
+      await setAudioMap(rec.id, currentMap());
+      await swapAudio(rec.id, t, j);
+      const tracks2 = await getAudioTracks(rec.id);
+      const map2 = await getAudioMap(rec.id);
+      if (rec.id === currentId) {
+        audioNames = tracks2;
+        audioMap = map2;
+      }
+      renderMapper(rec, chapters, tracks2, map2);
+    }),
+  );
+
+  $("#map-chk-all").addEventListener("click", () =>
+    document.querySelectorAll<HTMLInputElement>(".map-chk-box").forEach((c) => (c.checked = true)),
+  );
+  $("#map-chk-none").addEventListener("click", () =>
+    document.querySelectorAll<HTMLInputElement>(".map-chk-box").forEach((c) => (c.checked = false)),
+  );
+
+  // Auto-fill: spread the files still on "Auto" across the ticked chapters in order.
+  $("#map-autofill").addEventListener("click", () => {
+    const targets = [...document.querySelectorAll<HTMLInputElement>(".map-chk-box")]
+      .filter((c) => c.checked)
+      .map((c) => Number(c.dataset.ch));
+    if (!targets.length) return;
+    const auto = selects().filter((s) => Number(s.value) < 0);
+    auto.forEach((s, k) => {
+      const idx = Math.min(targets.length - 1, Math.floor((k * targets.length) / auto.length));
+      s.value = String(targets[idx]);
+    });
+  });
+
   $("#map-even").addEventListener("click", () => {
     const even = defaultAudioMap(tracks.length, chapters.length);
-    document
-      .querySelectorAll<HTMLSelectElement>("#details-body .map-sel")
-      .forEach((s, t) => (s.value = String(even[t])));
+    selects().forEach((s, t) => (s.value = String(even[t])));
   });
   $("#map-cancel").addEventListener("click", () => openDetails(rec));
   $("#map-save").addEventListener("click", async () => {
-    const m = [...map];
-    document
-      .querySelectorAll<HTMLSelectElement>("#details-body .map-sel")
-      .forEach((s) => (m[Number(s.dataset.track)] = Number(s.value)));
+    const m = currentMap();
     await setAudioMap(rec.id, m);
     if (rec.id === currentId) audioMap = m;
+    markDirty();
     openDetails(rec);
   });
 }
@@ -2637,14 +3506,17 @@ function pickAudioFiles() {
 // Overlays
 // ---------------------------------------------------------------------------
 
-const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl, detailsEl, helpEl];
+const ALL_OVERLAYS = [libraryEl, settingsEl, tocEl, searchEl, detailsEl, helpEl, codeviewEl];
 
 function openOverlay(el: HTMLElement) {
   showChrome();
   for (const o of ALL_OVERLAYS) o.classList.toggle("open", o === el);
   scrim.classList.add("show");
 }
-const openLibrary = () => openOverlay(libraryEl);
+const openLibrary = () => {
+  openOverlay(libraryEl);
+  void refreshLibrary();
+};
 const openSettings = () => openOverlay(settingsEl);
 
 // In-app user guide. Content adapts to the platform (desktop / Android / iOS / web).
@@ -2662,107 +3534,111 @@ function openHelp() {
   };
 
   $("#help-body").innerHTML = `
-    <p class="help-intro">Reader is a private, offline ebook &amp; audiobook reader. Nothing you read leaves your device — there are no ads and no tracking. Here's everything it can do.</p>
+    <p class="help-intro">Reader is a private, offline reader for ebooks, audiobooks, and any text or code file. Nothing you read leaves your device — there are no ads and no tracking. Here's everything it can do.</p>
 
     ${section("Your library", "📚", [
-      "<b>Add books</b> — tap <i>+ Open book</i>. Select several files at once to import them together.",
-      "Supported formats: <b>EPUB, MOBI, AZW3, FB2, CBZ</b> (comics) and <b>PDF</b>.",
-      "Books are sorted with the <b>most recently opened first</b>, so you can jump back in quickly.",
-      "Tap a book to read it. Tap the <b>ⓘ info</b> action on a book (or the ⓘ in the chapters panel) to open its <b>details page</b>.",
-      isAndroid && "Open a book file from another app (Files, Drive) with <i>Open with → Reader</i> — it's added automatically.",
-      isDesktop && "Double-click an EPUB/MOBI/PDF in Finder to open it in Reader (file associations).",
+      "<b>Add files</b> — tap <i>+ Open book</i>. When you open a file you can <b>Add it to the library</b> or just <b>View once</b> (without saving). Pick several files at once to import them together.",
+      "<b>Folders</b> — tap <i>＋ New folder</i> to organise your library. Open a folder to go in; use the <b>breadcrumb</b> to come back; rename (✎) or delete (🗑) from a folder's corner. New files land in the folder you're viewing.",
+      "Move a book between folders from its <b>details</b> page (the <i>Folder</i> dropdown).",
+      "Books are sorted <b>most recently opened first</b>. Tap to open; tap <b>ⓘ</b> for the details page.",
+      isAndroid && "Open a file from another app (Files, Drive) with <i>Open with → Reader</i>.",
+      isDesktop && "Double-click a supported file in Finder to open it (file associations).",
+    ])}
+
+    ${section("Formats", "🗂️", [
+      "<b>Books</b> open in the reader: <b>EPUB, MOBI, AZW3, FB2, CBZ</b> (comics), <b>PDF</b>.",
+      "<b>Text &amp; code</b> open in a built-in viewer: <b>TXT, Markdown, HTML, XML, JSON</b> and source files for ~50 languages (JS/TS, Python, Java, C/C++, Rust, Go, CSS, YAML, SQL…).",
+      "In the viewer, <b>Markdown</b> and <b>HTML</b> have a <b>Rendered ↔ Source</b> toggle. Source is a real editor — <b>edit and Save</b> back to the library (or download a one-time file).",
     ])}
 
     ${section("Reading", "📖", [
       "<b>Turn pages</b> — tap the right/left edge, swipe, or use the arrow keys / space bar.",
       "Choose <b>Scroll</b> or <b>Page</b> layout in Settings → Display.",
-      "Your position is saved automatically and synced back to the cover's progress ring.",
+      "Your position is saved automatically and shown on the cover's progress ring.",
       isAndroid && "<b>Volume buttons</b> can turn pages — toggle in Settings → Reading aids.",
       isDesktop && "<b>Media keys</b> (◀◀ / ▶▶) can turn pages — toggle in Settings → Reading aids.",
-      "<b>Immersive mode</b> auto-hides the top and bottom bars while you read. Tap the middle of the page to bring them back, or enable <i>Always show header</i>.",
+      "<b>Immersive mode</b> auto-hides the bars; tap the middle to bring them back, or enable <i>Always show header</i>.",
     ])}
 
     ${section("Appearance", "🎨", [
-      "<b>Themes</b> — several light, sepia and dark palettes in Settings → Display.",
-      "<b>Fonts</b> — pick from bundled reader-friendly faces (Literata, Bitter, Lora, Merriweather, Atkinson, OpenDyslexic and more) or your system font.",
-      "Adjust <b>font size, line spacing, text alignment</b> and <b>hyphenation</b>.",
-      "Set independent <b>top / bottom / left / right margins</b>.",
+      "<b>Themes</b> — light, sepia and dark palettes; each has its own multi-colour progress/scroll accents.",
+      "<b>Fonts</b> — bundled reader faces (Literata, Bitter, Lora, Merriweather, Atkinson, OpenDyslexic…) or your system font.",
+      "Adjust <b>font size, line spacing, alignment, hyphenation</b> and independent <b>top/bottom/left/right margins</b>.",
     ])}
 
     ${section("Find your place", "🔍", [
-      "<b>Contents</b> (chapters icon) lists every chapter, including chapters nested inside parts.",
-      "<b>Search</b> within the current chapter or the entire book, and tap a result to jump there.",
+      "<b>Contents</b> lists every chapter, including chapters nested inside parts.",
+      "<b>Search</b> the current chapter or the whole book; tap a result to jump.",
       "<b>Go to page</b> — type a page number in the search panel.",
-      "<b>Bookmarks</b> — tap the bookmark icon to mark a spot; revisit them from the chapters panel.",
-      "<b>Highlights &amp; notes</b> — select text to highlight it in a colour, attach a note, or copy it.",
+      "<b>Bookmarks</b> and <b>highlights &amp; notes</b> — select text to highlight in a colour, add a note, or copy.",
     ])}
 
     ${section("Listen — Text to speech", "🔊", [
-      "Tap <b>▶ → Text-to-speech</b> to have the book read aloud.",
-      "The spoken text is highlighted as it's read. In Settings → Read aloud you can turn on <b>word highlight</b>, <b>sentence highlight</b>, or <b>both at once</b>.",
-      "Tap the <b>⚙</b> next to each to fully style it — background &amp; text colour with opacity, underline (solid / dotted / dashed / wavy) and thickness, strike-through, font style and font weight.",
-      "Pick a <b>voice</b> and adjust the <b>speed</b>.",
-      isAndroid && "On Android the device's built-in TTS engine is used, so it works offline.",
+      "Tap <b>▶ → Text-to-speech</b> to have the book read aloud, with auto-scroll.",
+      "Turn on <b>word highlight</b>, <b>sentence highlight</b>, or <b>both</b> (Settings → Read aloud). Tap <b>⚙</b> to fully style each — colour &amp; opacity, underline style/thickness, strike-through, font style and weight, with a live preview.",
+      "Pick a <b>voice</b> and a <b>speed</b>. The TTS player is one simple bar: −10s · play · stop · +10s · speed.",
+      isAndroid && "Android uses the device's built-in TTS engine, so it works offline.",
     ])}
 
     ${section("Listen — Audiobooks", "🎧", [
-      "Tap <b>▶ → Audiobook</b>. If none is linked yet you'll be asked to add one: choose a <b>folder</b> or pick <b>individual files</b>.",
-      "Non-audio files in a folder are ignored automatically.",
-      "On the book's <b>details page</b> you can <b>map each audio file to a chapter</b> — useful when one chapter spans several files, or many files map to parts and chapters.",
-      "Audiobook chapters try to auto-align to the book's chapters; use <i>Distribute evenly</i> as a starting point.",
+      "Tap <b>▶ → Audiobook</b>. Add one as a <b>folder</b> or as <b>individual files</b> (non-audio files are ignored).",
+      "On <b>details → Map audio ↔ chapters</b>: reorder files with ▲▼, pin some to chapters, tick the target chapters and <b>Auto-fill</b> the rest in order. One file can span several chapters; several files can share one.",
+      "A <b>queue strip</b> shows the files (current centred); the <b>⋮ more</b> sheet has <b>repeat</b> (off / one / all), <b>prev / stop / next</b>, speed, and <b>“resume each file where I left off”</b>.",
+      "<b>Continuous mode</b> (in the queue sheet) plays straight through like a music player, ignoring the chapter map.",
     ])}
 
-    ${section("The player bar", "⏯️", [
-      "Shared by text-to-speech and audiobooks: a progress bar you can scrub, plus <b>−10s / +10s</b>, play/pause and stop.",
-      "Tap the <b>speed pill</b> for a slider (fine <b>0.05×</b> steps) and quick presets (1× · 1.25× · 1.5× · 2× · 3×).",
-      "<b>Headphone &amp; lock-screen controls</b> work — play/pause and skip from your earbuds or the system media controls.",
+    ${section("The player & speed", "⏯️", [
+      "Scrub the progress bar; <b>−10s / +10s</b>, play/pause and stop are always there.",
+      "Open <b>speed</b> for a slider from <b>0.05× to 10×</b> (1× is centred, exponential) plus presets (0.25× … 3×).",
+      "<b>Headphone &amp; lock-screen controls</b> drive both TTS and audiobooks.",
+      "<b>Auto-advance</b> (Settings → Reading aids) keeps playback flowing into the next chapter; turn it off to stop at each chapter's end.",
+    ])}
+
+    ${section("Sync & backup", "☁️", [
+      "Open <b>⟳ Sync</b> in the Library to connect <b>Google Drive</b>. Then <b>Sync now</b> moves your reading progress and the whole library.",
+      "<b>Progress</b> (position, bookmarks, audio position) merges by <b>furthest progress</b> — read to page 20 on one device and it wins over page 12 on another. <b>Themes &amp; settings stay per-device.</b>",
+      "<b>Choose what to sync</b>: each book's details page has <b>Add to / Remove from cloud library</b>. Synced books are stored as their <b>original files in your folder structure</b>, mirrored inside the Drive <i>Reader</i> folder.",
+      "<b>Backup file</b> — Export/Import a portable copy of your progress without the cloud.",
     ])}
 
     ${section("Book details", "ⓘ", [
-      "Total <b>word and character counts</b>, and a chapter list with <b>start–end page numbers</b> and pages per chapter, computed for your current font &amp; layout.",
-      "<b>Edit the title and author</b> — the change is written back into the EPUB file.",
-      "Link or re-map an audiobook from here.",
+      "Format, size, language, publisher; <b>word &amp; character counts</b>; a chapter list with <b>start–end pages</b> per chapter, computed for your current font &amp; layout.",
+      "<b>Edit title/author</b> (written back into the EPUB), move to a <b>folder</b>, link/map an audiobook, and add/remove from the cloud.",
     ])}
 
     ${
       isDesktop
         ? section("Desktop window (macOS)", "🖥️", [
-            "<b>Float on top</b> — keep Reader above all other windows (the float button in the toolbar).",
-            "Set separate <b>opacity</b> for when the window is focused vs in the background, in Settings → Window.",
-            "The window can <b>auto-dim</b> after a period of inactivity, and stays usable at very small sizes.",
+            "<b>Float on top</b>, separate focused/background <b>opacity</b> (Settings → Window), and <b>auto-dim</b> when idle. Stays usable at tiny sizes.",
           ])
         : ""
     }
     ${
       isAndroid
         ? section("Android extras", "🤖", [
-            "<b>Float (Picture-in-Picture)</b> — shrink Reader into a floating window over other apps, YouTube-style.",
-            "Import an audiobook folder with the native folder picker.",
-            "Volume-button paging and the native TTS engine are Android-specific.",
+            "<b>Float (Picture-in-Picture)</b>, native folder import, volume-button paging, and the native TTS engine.",
           ])
         : ""
     }
     ${
       isIOS
         ? section("iPad / iPhone notes", "", [
-            "Import audiobooks as individual files (folder import isn't available in the iOS web view).",
+            "Add audiobooks as <b>individual files</b> (folder import isn't available in the iOS web view).",
           ])
         : ""
     }
     ${
       isWeb
         ? section("Running in a browser", "🌐", [
-            "Everything is stored locally in your browser. Clearing site data will remove your library.",
-            "For the full experience (floating window, file associations, native TTS) use the desktop or Android app.",
+            "Stored locally in your browser; clearing site data removes the library. Use the desktop or Android app for floating window, file associations and native TTS.",
           ])
         : ""
     }
 
     ${section("Tips & tricks", "💡", [
-      "Turn on <b>both word and sentence highlight</b> for easy reading-along — the word stands out on top of a softly tinted sentence.",
-      "Reading at night? Pair a dark theme with a lower active-window opacity (desktop) or immersive mode.",
-      "Long books feel faster in <b>Page</b> layout; study/reference reads are often easier in <b>Scroll</b>.",
-      "Use highlights with notes as a lightweight study tool — they're saved per book.",
+      "Turn on <b>both word + sentence highlight</b> for easy reading-along.",
+      "Use <b>folders</b> + selective cloud sync to keep big audiobooks on just the devices you want them.",
+      "Long books feel faster in <b>Page</b> layout; reference reads are easier in <b>Scroll</b>.",
       "Everything here is optional and toggleable — set it once and it's remembered.",
     ])}
 
@@ -2779,6 +3655,51 @@ function openSearch() {
 function closeOverlays() {
   for (const o of ALL_OVERLAYS) o.classList.remove("open");
   scrim.classList.remove("show");
+}
+
+// The topmost open bottom-sheet, if any.
+function openSheet(): HTMLElement | null {
+  for (const sel of [
+    "#speed-sheet",
+    "#player-more",
+    "#queue-sheet",
+    "#audio-src-sheet",
+    "#open-mode-sheet",
+    "#hl-style-sheet",
+    "#sync-sheet",
+  ]) {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (el && !el.hidden) return el;
+  }
+  return null;
+}
+
+// Unified "back": close a sheet → leave an overlay to the library → go up a
+// folder → (at the library root) signal the caller it's safe to exit.
+// Returns false only when there's nothing left to go back to.
+function handleBack(): boolean {
+  const sheet = openSheet();
+  if (sheet) {
+    sheet.hidden = true;
+    return true;
+  }
+  const overlays = [settingsEl, detailsEl, helpEl, codeviewEl, searchEl, tocEl];
+  if (overlays.some((o) => o.classList.contains("open"))) {
+    destroyCode();
+    openLibrary();
+    return true;
+  }
+  if (libraryEl.classList.contains("open")) {
+    if (currentFolder) {
+      currentFolder = parentOf(currentFolder);
+      refreshLibrary();
+      return true;
+    }
+    return false; // at the library root — nothing to go back to
+  }
+  // reading a book with no overlay open → back to the library
+  openLibrary();
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2976,18 +3897,73 @@ function syncSettingsUI() {
   // reading aids
   $<HTMLInputElement>("#t-mediakeys").checked = settings.mediaKeys;
   $<HTMLInputElement>("#t-volume").checked = settings.volumeButtons;
+  $<HTMLInputElement>("#t-autoadvance").checked = settings.autoAdvance;
 
   // tts
   $<HTMLInputElement>("#tts-rate").value = String(settings.ttsRate);
   $("#tts-rate-val").textContent = settings.ttsRate.toFixed(1) + "×";
   $<HTMLInputElement>("#t-hl-word").checked = settings.ttsWordHl;
   $<HTMLInputElement>("#t-hl-sentence").checked = settings.ttsSentenceHl;
+  initRangeFills(settingsEl);
+  refreshSyncUI();
+}
+
+// Reflect cloud-sync state in the settings panel.
+function refreshSyncUI() {
+  const s = loadSyncSettings();
+  $<HTMLInputElement>("#sync-folder").value = s.folder;
+  $<HTMLInputElement>("#sync-filename").value = s.filename;
+  $<HTMLInputElement>("#sync-auto").checked = s.auto;
+  $<HTMLInputElement>("#sync-content").checked = s.content;
+  $<HTMLInputElement>("#sync-evict").value = String(s.evictDays || 0);
+
+  document.querySelectorAll<HTMLElement>("#sync-providers .sync-prov").forEach((b) => {
+    const prov = allProviders().find((p) => p.id === b.dataset.prov);
+    const connected = !!prov?.isConnected();
+    b.classList.toggle("connected", connected);
+    b.toggleAttribute("data-unconfigured", !prov?.isConfigured());
+  });
+
+  const acct = activeProvider();
+  const connected = !!acct?.isConnected();
+  const accEl = $("#sync-account");
+  if (connected) {
+    const when = lastSynced();
+    accEl.hidden = false;
+    accEl.textContent =
+      `Signed in: ${acct!.account() || acct!.name}` +
+      (when ? ` · last synced ${new Date(when).toLocaleString()}` : "");
+  } else {
+    accEl.hidden = true;
+  }
+  $("#sync-signout").hidden = !connected;
+  void updateLibInfo();
+  renderSyncBusy();
+}
+
+// Show how many local books are in the cloud library.
+async function updateLibInfo() {
+  const books = await listBooks();
+  const inCloud = books.filter((b) => isCloudSynced(b.id)).length;
+  $("#sync-libinfo").textContent = `${inCloud} of ${books.length} book${
+    books.length === 1 ? "" : "s"
+  } in the cloud library.`;
+  $("#sync-addall").hidden = inCloud >= books.length || books.length === 0;
+}
+
+// Hide the Sync button + show the progress bar while a sync is running.
+function renderSyncBusy() {
+  const running = isSyncing();
+  $("#sync-now").hidden = running;
+  $("#sync-progress-wrap").hidden = !running;
+  if (!running) $("#sync-progress-bar").style.width = "0%";
 }
 
 function commit() {
   saveSettings(settings);
   applyChrome();
   syncSettingsUI();
+  // settings/theme are intentionally NOT synced — no markDirty here
 }
 
 function wireUi() {
@@ -2997,6 +3973,8 @@ function wireUi() {
   $("#btn-library").addEventListener("click", openLibrary);
   $("#btn-help").addEventListener("click", openHelp);
   $("#btn-back-help").addEventListener("click", openLibrary);
+  $("#btn-sync").addEventListener("click", openSyncSheet);
+  $("#btn-new-folder").addEventListener("click", newFolder);
 
   // --- Search & Go to ---
   $("#btn-close-search").addEventListener("click", closeOverlays);
@@ -3066,7 +4044,7 @@ function wireUi() {
     const files = [...(fileInput.files || [])];
     fileInput.value = "";
     if (files.length === 1) {
-      await importFile(files[0]); // import + open
+      chooseAndOpen(files[0].name, await files[0].arrayBuffer()); // add to library, or view once
     } else if (files.length > 1) {
       // import all into the library without opening; stay in the library
       for (const f of files) await importFile(f, false);
@@ -3202,6 +4180,10 @@ function wireUi() {
     commit();
     applyVolumeNative();
   });
+  $<HTMLInputElement>("#t-autoadvance").addEventListener("change", (e) => {
+    settings.autoAdvance = (e.target as HTMLInputElement).checked;
+    commit();
+  });
 
   // --- Play (TTS / Audiobook) ---
   $("#btn-tts").addEventListener("click", onPlayButton);
@@ -3268,8 +4250,180 @@ function wireUi() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") captureNow();
     // a screen wake lock is dropped when the page is hidden; re-acquire it
-    else acquireWake();
+    else {
+      acquireWake();
+      syncOnFocus(); // pull latest the moment the app comes back
+    }
   });
+  window.addEventListener("focus", syncOnFocus);
+
+  wireSync();
+  wireCodeView();
+
+  // Back navigation: Esc on desktop/web, Android hardware back (via native bridge)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") handleBack();
+  });
+  window.addEventListener("reader-back", () => {
+    if (!handleBack()) (window as any).ReaderNative?.exitApp?.();
+  });
+}
+
+// ---- Sync & backup settings wiring ----
+function wireSync() {
+  // offline backup file
+  $("#sync-export").addEventListener("click", async () => {
+    await exportBackup(loadSyncSettings().filename || "reader-backup");
+    setSyncStatus("Backup exported.");
+  });
+  $<HTMLInputElement>("#sync-import").addEventListener("change", async (e) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      const r = await importBackup(file);
+      setSyncStatus(`Imported ${r.books} book${r.books === 1 ? "" : "s"}. Reloading…`);
+      setTimeout(() => location.reload(), 800);
+    } catch (err: any) {
+      setSyncStatus("Import failed: " + (err?.message || "bad file"));
+    }
+  });
+
+  // cloud account connect / disconnect
+  $("#sync-providers").addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement).closest?.(".sync-prov") as HTMLElement | null;
+    if (!btn) return;
+    const id = btn.dataset.prov as "gdrive" | "onedrive";
+    const prov = allProviders().find((p) => p.id === id);
+    if (!prov || !prov.isConfigured()) {
+      setSyncStatus(
+        "Cloud sign-in isn't set up yet — add the OAuth client id for " +
+          (id === "gdrive" ? "Google Drive" : "OneDrive") +
+          " (see Sync setup docs).",
+      );
+      return;
+    }
+    try {
+      if (prov.isConnected()) {
+        await prov.disconnect();
+      } else {
+        await prov.connect();
+        const s = loadSyncSettings();
+        s.provider = id;
+        saveSyncSettings(s);
+      }
+      syncSettingsUI();
+    } catch (err: any) {
+      setSyncStatus("Sign-in failed: " + (err?.message || ""));
+    }
+  });
+
+  const folder = $<HTMLInputElement>("#sync-folder");
+  const filename = $<HTMLInputElement>("#sync-filename");
+  folder.addEventListener("change", () => {
+    const s = loadSyncSettings();
+    s.folder = folder.value.trim() || "ReaderAppData";
+    saveSyncSettings(s);
+  });
+  filename.addEventListener("change", () => {
+    const s = loadSyncSettings();
+    s.filename = filename.value.trim() || "reader-sync.json";
+    saveSyncSettings(s);
+  });
+  $<HTMLInputElement>("#sync-auto").addEventListener("change", (e) => {
+    const s = loadSyncSettings();
+    s.auto = (e.target as HTMLInputElement).checked;
+    saveSyncSettings(s);
+  });
+  $<HTMLInputElement>("#sync-content").addEventListener("change", (e) => {
+    const s = loadSyncSettings();
+    s.content = (e.target as HTMLInputElement).checked;
+    saveSyncSettings(s);
+  });
+  $<HTMLInputElement>("#sync-evict").addEventListener("change", (e) => {
+    const s = loadSyncSettings();
+    s.evictDays = Math.max(0, Math.floor(+(e.target as HTMLInputElement).value || 0));
+    saveSyncSettings(s);
+  });
+
+  // live progress from the sync engine → floating toast + in-sheet file list
+  setSyncProgressHandler(({ message, pct, items }) => {
+    setSyncStatus(message);
+    $("#sync-progress-bar").style.width = pct + "%";
+    renderSyncToast(message, pct, items);
+    renderSyncItems(items);
+  });
+
+  $("#sync-addall").addEventListener("click", async () => {
+    for (const b of await listBooks()) setCloudSynced(b.id, true);
+    await updateLibInfo();
+    if (!isSyncing()) $("#sync-now").click(); // upload them now
+  });
+
+  $("#sync-signout").addEventListener("click", async () => {
+    await activeProvider()?.disconnect();
+    const s = loadSyncSettings();
+    s.provider = "";
+    saveSyncSettings(s);
+    setSyncStatus("Signed out. Your books stay on this device.");
+    refreshSyncUI();
+  });
+
+  $("#sync-now").addEventListener("click", async () => {
+    if (isSyncing()) return;
+    $("#sync-now").hidden = true;
+    $("#sync-progress-wrap").hidden = false;
+    $("#sync-progress-bar").style.width = "0%";
+    setSyncStatus("Starting sync…");
+    const r = await fullSync();
+    await refreshLibrary();
+    setSyncStatus(r.message + (r.ok ? " ✓" : ""));
+    refreshSyncUI();
+  });
+  $("#sync-close").addEventListener("click", () => ($("#sync-sheet").hidden = true));
+  $("#sync-sheet").addEventListener("click", (e) => {
+    if (e.target === $("#sync-sheet")) $("#sync-sheet").hidden = true;
+  });
+}
+
+function setSyncStatus(msg: string) {
+  $("#sync-status").textContent = msg;
+}
+
+// Floating indicator: current file + percentage + bar. Auto-hides when done.
+let syncToastTimer: number | undefined;
+function renderSyncToast(message: string, pct: number, items: SyncItem[]) {
+  const toast = $("#sync-toast");
+  toast.hidden = false;
+  $("#sync-toast-msg").textContent = message;
+  $("#sync-toast-pct").textContent = pct + "%";
+  $("#sync-toast-bar").style.width = pct + "%";
+  window.clearTimeout(syncToastTimer);
+  // hide shortly after completion (everything done, or 100%)
+  const finished = pct >= 100 || (items.length > 0 && items.every((i) => i.status === "done"));
+  if (finished) syncToastTimer = window.setTimeout(() => (toast.hidden = true), 2500);
+}
+
+// In-sheet list: ✓ synced · ⟳ currently syncing · ○ queued.
+function renderSyncItems(items: SyncItem[]) {
+  const list = $("#sync-items");
+  if (!items.length) {
+    list.innerHTML = "";
+    list.hidden = true;
+    return;
+  }
+  list.hidden = false;
+  const mark = (s: SyncItem["status"]) =>
+    s === "done" ? "✓" : s === "active" ? "⟳" : "○";
+  const arrow = (d: SyncItem["dir"]) => (d === "up" ? "↑" : "↓");
+  list.innerHTML = items
+    .map(
+      (it) =>
+        `<div class="sync-item ${it.status}"><span class="si-mark">${mark(it.status)}</span>` +
+        `<span class="si-name">${escapeHtml(it.name)}</span><span class="si-dir">${arrow(it.dir)}</span></div>`,
+    )
+    .join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -3277,6 +4431,12 @@ function wireUi() {
 // ---------------------------------------------------------------------------
 
 async function boot() {
+  registerGoogleDrive();
+  setLibraryChangedHandler(() => void refreshLibrary());
+  // free up local files not opened recently (re-download from cloud on open)
+  void evictOldBooks(loadSyncSettings().evictDays).then((n) => {
+    if (n) void refreshLibrary();
+  });
   wireUi();
   applyChrome();
   applyPlatformVisibility();

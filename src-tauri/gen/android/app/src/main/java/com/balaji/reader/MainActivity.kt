@@ -94,6 +94,22 @@ class MainActivity : TauriActivity() {
     if (pipEnabled) enterPipMode()
   }
 
+  // Hardware back → let the web layer navigate (close sheet / overlay / go to
+  // library / up a folder). It calls ReaderNative.exitApp() when there's nothing
+  // left to go back to.
+  @Deprecated("deprecated")
+  override fun onBackPressed() {
+    val wv = webView ?: findWebView(window.decorView)
+    if (wv != null) {
+      wv.post {
+        wv.evaluateJavascript("window.dispatchEvent(new CustomEvent('reader-back'))", null)
+      }
+    } else {
+      @Suppress("DEPRECATION")
+      super.onBackPressed()
+    }
+  }
+
   // Folder picker (SAF) → copy audio files to cache → hand paths to the web layer.
   @Deprecated("deprecated")
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -185,6 +201,29 @@ class MainActivity : TauriActivity() {
     fun ttsStop() {
       tts?.stop()
     }
+
+    // Open the Google sign-in page in the system browser / Custom Tab. The
+    // reversed-client-id redirect comes back via the intent-filter → handleIntent.
+    @JavascriptInterface
+    fun openAuthUrl(url: String) {
+      runOnUiThread {
+        try {
+          startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+          e.printStackTrace()
+        }
+      }
+    }
+
+    // Lets the web layer pick the debug vs release Google OAuth client id.
+    @JavascriptInterface
+    fun isDebugBuild(): Boolean = BuildConfig.DEBUG
+
+    // Called by the web layer when hardware-back has nothing left to undo.
+    @JavascriptInterface
+    fun exitApp() {
+      runOnUiThread { finish() }
+    }
   }
 
   private fun enterPipMode() {
@@ -199,6 +238,17 @@ class MainActivity : TauriActivity() {
   // Copy the incoming "Open with" file into cache and notify the web layer.
   private fun handleIntent(intent: Intent?) {
     val uri = intent?.data ?: return
+    // Google OAuth redirect (reversed client id scheme) → hand the code to the web layer.
+    if (uri.scheme?.startsWith("com.googleusercontent.apps") == true) {
+      val wv = webView ?: findWebView(window.decorView)
+      wv?.post {
+        wv.evaluateJavascript(
+          "window.dispatchEvent(new CustomEvent('oauth-code',{detail:${JSONObject.quote(uri.toString())}}))",
+          null,
+        )
+      }
+      return
+    }
     if (intent.action != Intent.ACTION_VIEW && intent.action != Intent.ACTION_SEND) return
     try {
       val name = queryName(uri) ?: "book"

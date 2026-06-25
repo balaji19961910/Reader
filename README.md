@@ -339,7 +339,11 @@ magic — the binary has to be regenerated.
    Scheme is `MAJOR.MINOR.PATCH`:
    - **PATCH** auto-increments once per release **that sits on a new commit**. Running
      `release.sh` twice on the *same* commit changes nothing — the version is keyed to the
-     commit it was cut from (tracked in [`release/version.json`](release/version.json) → `lastCommit`).
+     newest commit that changed a **non-version file** (tracked in
+     [`release/version.json`](release/version.json) → `lastCommit`). A commit that only
+     touches the version files themselves (`version.json`, `version.ts`, `package.json`,
+     `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`) is **ignored** — so you can freely commit
+     the version bump without it triggering another bump next time.
    - **MINOR** — a feature drop. Bump by hand: `./release/release.sh --minor`.
    - **MAJOR** — a drastic change. Bump by hand: `./release/release.sh --major`.
    - Pin an exact version with `./release/release.sh --set-version=2.3.0`.
@@ -353,7 +357,11 @@ magic — the binary has to be regenerated.
    ./release/release.sh                  # patch bump (if on a new commit) + build + distribute
    ./release/release.sh --minor          # feature release (1.4.x → 1.5.0)
    ./release/release.sh --set-version=2.0.0
+   ./release/release.sh --no-commit      # skip the auto-commit of the version bump
    ```
+   As its **last step** the script auto-commits the version files
+   (`chore: release vX.Y.Z`). That's a version-only commit, so it never triggers another
+   bump. Pass `--no-commit` to skip it.
    …or build a single target manually (these do **not** auto-version):
    ```bash
    npm run tauri build                          # macOS  → Reader.app

@@ -25,15 +25,18 @@ DEFAULT_DEST="/Users/balaji-9678/Library/CloudStorage/GoogleDrive-balaji19961910
 # --- parse args (flags + optional destination folder, any order) ---
 #   --minor / --major          bump y / major by hand (drastic changes)
 #   --set-version=X.Y.Z         pin an exact version
+#   --no-commit                 don't auto-commit the version bump at the end
 # (otherwise the patch number auto-increments once per new commit)
 NO_BUILD=0
 OPEN=0
+NO_COMMIT=0
 DEST=""
 VERSION_FLAGS=()
 for a in "$@"; do
   case "$a" in
     --no-build) NO_BUILD=1 ;;
     -o|--open) OPEN=1 ;;
+    --no-commit) NO_COMMIT=1 ;;
     --minor) VERSION_FLAGS+=(--minor) ;;
     --major) VERSION_FLAGS+=(--major) ;;
     --set-version=*) VERSION_FLAGS+=(--set "${a#*=}") ;;
@@ -90,7 +93,25 @@ echo "✓ Reader.app + Reader.zip → $DEST/"
 rm -rf /Applications/Reader.app && cp -R "$APP" /Applications/
 echo "✓ Reader.app → /Applications/"
 
-# --- 6) reveal (only with -o / --open) ---
+# --- 6) auto-commit the version bump (a "version-only" commit, so it never
+#        triggers another bump — see release/version.mjs) ---
+if [[ "$NO_BUILD" -eq 0 && "$NO_COMMIT" -eq 0 ]]; then
+  VER="$(node -p "require('./release/version.json').version")"
+  VFILES=()
+  for f in release/version.json src/version.ts package.json \
+           src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+    [[ -f "$f" ]] && VFILES+=("$f")
+  done
+  git add -- "${VFILES[@]}" 2>/dev/null || true
+  if git diff --cached --quiet -- "${VFILES[@]}"; then
+    echo "• No version changes to commit (v$VER)"
+  else
+    git commit -m "chore: release v$VER" -- "${VFILES[@]}" >/dev/null
+    echo "✓ Committed version bump → v$VER"
+  fi
+fi
+
+# --- 7) reveal (only with -o / --open) ---
 if [[ "$OPEN" -eq 1 ]]; then
   open "$DEST" 2>/dev/null || true
   open /Applications/Reader.app 2>/dev/null || true

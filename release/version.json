@@ -1,18 +1,27 @@
 {
-  "version": "1.2.0",
-  "lastCommit": "f0b45030e240272c1bfb29765b47eab4bfa0a612",
+  "version": "1.3.0",
+  "lastCommit": "1e4627a2db41d4faffb40677923ce2aecf03f083",
   "releases": [
+    {
+      "version": "1.3.0",
+      "commit": "1e4627a",
+      "date": "2026-06-25",
+      "notes": [
+        "Folder library: drag-and-drop a book onto a folder, or long-press / right-click to move or copy",
+        "Server-side cloud moves — re-foldering a synced book no longer re-uploads it",
+        "Settings reorganised into collapsible Display, Fonts and Margins groups",
+        "Fixed long-press selecting page text on Android",
+        "Automatic versioning: release.sh bumps the version per commit and shows release notes in Help"
+      ]
+    },
     {
       "version": "1.2.0",
       "commit": "f0b4503",
       "date": "2026-06-24",
       "notes": [
         "Selective Google Drive sync — opt in per book; reading progress merges by furthest position",
-        "Server-side cloud moves: re-foldering a synced book no longer re-uploads it",
-        "Folder library with drag-and-drop and long-press move / copy",
-        "Settings reorganised into collapsible Display, Fonts and Margins groups",
-        "Text-to-speech and audiobook player with 0.25x–3x speed presets",
-        "Offline eviction: auto-remove unopened downloads, re-fetch from cloud on open"
+        "Live sync progress: per-file status, percentage and progress bar",
+        "Sign out while keeping local data; offline eviction of unopened downloads"
       ]
     },
     {

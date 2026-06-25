@@ -2,6 +2,7 @@ import { makeBook } from "./foliate-js/view.js"; // also registers <foliate-view
 import { Overlayer } from "./foliate-js/overlayer.js";
 import { unzipSync, zipSync, strFromU8, strToU8 } from "fflate";
 import { fontFaceCSS, familyFor, isBundled } from "./fonts";
+import { APP_VERSION, APP_BUILD_DATE, RELEASE_NOTES } from "./version";
 import {
   Annotation,
   BookRecord,
@@ -2787,6 +2788,7 @@ async function refreshLibrary() {
   bookGrid.querySelectorAll(".book-card, .folder-card").forEach((n) => n.remove());
 
   renderCrumbs();
+  updatePasteBtn();
   const subfolders = childFolders(currentFolder, folders, books);
   const here = books.filter((b) => (b.folder || "") === currentFolder);
   emptyHint.style.display = subfolders.length || here.length ? "none" : "block";
@@ -2813,6 +2815,18 @@ async function refreshLibrary() {
     card.querySelector(".f-del")!.addEventListener("click", (e) => {
       e.stopPropagation();
       void deleteFolder(path);
+    });
+    // drop a dragged book onto the folder to move it in
+    card.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      card.classList.add("drag-over");
+    });
+    card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
+    card.addEventListener("drop", (e) => {
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      const id = e.dataTransfer?.getData("text/plain");
+      if (id) void moveBookToFolder(id, path);
     });
     bookGrid.appendChild(card);
   }
@@ -2854,6 +2868,35 @@ async function refreshLibrary() {
         await refreshLibrary();
       }
     });
+    // drag a book onto a folder to move it
+    card.draggable = true;
+    card.addEventListener("dragstart", (e) => e.dataTransfer?.setData("text/plain", b.id));
+    // right-click (desktop) → move/copy menu
+    card.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openBookCtx(e.clientX, e.clientY, b.id);
+    });
+    // long-press (touch) → move/copy menu
+    let lp: number | undefined;
+    let longPressed = false;
+    card.addEventListener(
+      "touchstart",
+      (e) => {
+        const t = e.touches[0];
+        longPressed = false;
+        lp = window.setTimeout(() => {
+          longPressed = true;
+          openBookCtx(t.clientX, t.clientY, b.id);
+        }, 500);
+      },
+      { passive: true },
+    );
+    const cancelLp = () => window.clearTimeout(lp);
+    card.addEventListener("touchmove", cancelLp, { passive: true });
+    card.addEventListener("touchend", (e) => {
+      window.clearTimeout(lp);
+      if (longPressed) e.preventDefault(); // suppress the tap that would open the book
+    });
     bookGrid.appendChild(card);
   }
 }
@@ -2883,6 +2926,82 @@ async function toggleBookCloud(e: Event, b: BookRecord) {
   }
 }
 
+// ---- Move / copy books between folders (drag-drop + long-press cut/copy) ----
+let clip: { id: string; mode: "cut" | "copy" } | null = null;
+
+function updatePasteBtn() {
+  const btn = $("#lib-paste");
+  if (clip) {
+    btn.hidden = false;
+    btn.textContent = clip.mode === "cut" ? "📁 Move here" : "📁 Copy here";
+  } else {
+    btn.hidden = true;
+  }
+}
+
+async function moveBookToFolder(id: string, folder: string) {
+  const rec = await getBook(id);
+  if (!rec || (rec.folder || "") === folder) return;
+  rec.folder = folder;
+  await saveBook(rec);
+  markDirty();
+  await refreshLibrary();
+}
+
+async function pasteIntoCurrent() {
+  if (!clip) return;
+  const rec = await getBook(clip.id);
+  if (rec) {
+    if (clip.mode === "cut") {
+      rec.folder = currentFolder;
+      await saveBook(rec);
+    } else {
+      // copy = a fresh independent record (own progress) in the current folder
+      await saveBook({
+        ...rec,
+        id: `${rec.id}__copy-${Date.now().toString(36)}`,
+        folder: currentFolder,
+        cfi: undefined,
+        progress: 0,
+        bookmarks: [],
+        annotations: [],
+        evicted: false,
+        addedAt: Date.now(),
+        lastOpened: Date.now(),
+      });
+    }
+    markDirty();
+  }
+  clip = null;
+  updatePasteBtn();
+  await refreshLibrary();
+}
+
+// Long-press / right-click menu position.
+function openBookCtx(x: number, y: number, id: string) {
+  const m = $("#book-ctx");
+  m.dataset.bookId = id;
+  m.hidden = false;
+  m.style.left = Math.min(x, window.innerWidth - 230) + "px";
+  m.style.top = Math.min(y, window.innerHeight - 110) + "px";
+}
+
+function wireLibraryClipboard() {
+  $("#book-ctx").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null;
+    const id = $("#book-ctx").dataset.bookId;
+    $("#book-ctx").hidden = true;
+    if (b && id) {
+      clip = { id, mode: b.dataset.act as "cut" | "copy" };
+      updatePasteBtn();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!(e.target as HTMLElement).closest?.("#book-ctx")) $("#book-ctx").hidden = true;
+  });
+  $("#lib-paste").addEventListener("click", pasteIntoCurrent);
+}
+
 function renderCrumbs() {
   const nav = $("#lib-crumbs");
   const parts = currentFolder ? currentFolder.split("/") : [];
@@ -2893,12 +3012,24 @@ function renderCrumbs() {
     crumbs.push(`<span class="crumb-sep">›</span><button class="crumb" data-path="${escapeHtml(acc)}">${escapeHtml(p)}</button>`);
   }
   nav.innerHTML = crumbs.join("");
-  nav.querySelectorAll<HTMLElement>(".crumb").forEach((b) =>
+  nav.querySelectorAll<HTMLElement>(".crumb").forEach((b) => {
     b.addEventListener("click", () => {
       currentFolder = b.dataset.path || "";
       refreshLibrary();
-    }),
-  );
+    });
+    // drop a book onto a breadcrumb to move it to that folder (e.g. up a level)
+    b.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      b.classList.add("drag-over");
+    });
+    b.addEventListener("dragleave", () => b.classList.remove("drag-over"));
+    b.addEventListener("drop", (e) => {
+      e.preventDefault();
+      b.classList.remove("drag-over");
+      const id = e.dataTransfer?.getData("text/plain");
+      if (id) void moveBookToFolder(id, b.dataset.path || "");
+    });
+  });
 }
 
 async function newFolder() {
@@ -3533,8 +3664,15 @@ function openHelp() {
     return `<section class="help-sec"><h3 class="help-h">${icon} ${title}</h3><ul>${lis}</ul></section>`;
   };
 
+  const notesList = RELEASE_NOTES.map((n) => `<li>${n}</li>`).join("");
+
   $("#help-body").innerHTML = `
     <p class="help-intro">Reader is a private, offline reader for ebooks, audiobooks, and any text or code file. Nothing you read leaves your device — there are no ads and no tracking. Here's everything it can do.</p>
+
+    <section class="help-sec whatsnew">
+      <h3 class="help-h">🆕 Version ${APP_VERSION} <span class="help-build">· ${APP_BUILD_DATE}</span></h3>
+      ${RELEASE_NOTES.length ? `<p class="help-latest"><b>Latest:</b> ${RELEASE_NOTES[0]}</p><ul>${notesList}</ul>` : ""}
+    </section>
 
     ${section("Your library", "📚", [
       "<b>Add files</b> — tap <i>+ Open book</i>. When you open a file you can <b>Add it to the library</b> or just <b>View once</b> (without saving). Pick several files at once to import them together.",
@@ -3642,7 +3780,7 @@ function openHelp() {
       "Everything here is optional and toggleable — set it once and it's remembered.",
     ])}
 
-    <p class="help-foot">Private by design · no ads · no tracking · works offline.</p>
+    <p class="help-foot">Reader ${APP_VERSION} · Private by design · no ads · no tracking · works offline.</p>
   `;
 }
 
@@ -4259,6 +4397,7 @@ function wireUi() {
 
   wireSync();
   wireCodeView();
+  wireLibraryClipboard();
 
   // Back navigation: Esc on desktop/web, Android hardware back (via native bridge)
   document.addEventListener("keydown", (e) => {

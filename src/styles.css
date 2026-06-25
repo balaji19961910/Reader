@@ -13,6 +13,23 @@
 
 * { box-sizing: border-box; }
 
+/* Kill the long-press text-selection + copy/share callout app-wide (Android
+   WebView ignores element-level user-select on some versions, so default it
+   off globally and re-enable only where reading/editing text is intended). */
+html, body {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+#viewer, #codeview, .cm-editor,
+input, textarea, [contenteditable="true"] {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
 html, body {
   margin: 0;
   height: 100%;
@@ -210,6 +227,7 @@ foliate-view { display: block; width: 100%; height: 100%; }
 .crumb:last-of-type { opacity: 1; font-weight: 600; }
 .crumb:hover { background: rgba(127, 127, 127, 0.12); }
 .crumb-sep { opacity: 0.4; }
+.lib-bar-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .lib-newfolder {
   flex: 0 0 auto;
   border: 1px solid var(--chrome-border);
@@ -220,11 +238,46 @@ foliate-view { display: block; width: 100%; height: 100%; }
   font-size: 13px;
   cursor: pointer;
 }
+#lib-paste { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* drag-over highlight for folder / breadcrumb drop targets */
+.folder-card.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
+.crumb.drag-over { background: var(--accent); color: #fff; opacity: 1; }
+
+/* book move/copy context menu */
+.ctx-menu {
+  position: fixed;
+  z-index: 45;
+  background: var(--chrome-bg);
+  color: var(--chrome-fg);
+  border: 1px solid var(--chrome-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+}
+.ctx-menu[hidden] { display: none; }
+.ctx-menu button {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--chrome-fg);
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.ctx-menu button:hover { background: rgba(127, 127, 127, 0.15); }
 
 /* ---- Folder cards ---- */
 .folder-card {
   position: relative;
   cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
   border: 1px solid var(--chrome-border);
   border-radius: 12px;
   padding: 14px 12px;
@@ -259,7 +312,13 @@ foliate-view { display: block; width: 100%; height: 100%; }
 .folder-card .f-del { right: 6px; }
 .folder-card:hover .f-ren,
 .folder-card:hover .f-del { opacity: 1; }
-.book-card { position: relative; cursor: pointer; }
+.book-card {
+  position: relative;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 .book-card .cover {
   position: relative;
   aspect-ratio: 2 / 3;
@@ -534,6 +593,35 @@ body.immersive.always-header.chrome-hidden #toolbar {
   opacity: 0.55;
   margin: 0 0 14px;
 }
+
+/* Collapsible settings groups (heading → expand/collapse) */
+.settings-group { border-bottom: 1px solid var(--chrome-border); }
+.settings-group > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 2px;
+  font-size: 15px;
+  font-weight: 600;
+  user-select: none;
+}
+.settings-group > summary::-webkit-details-marker { display: none; }
+.settings-group > summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg); /* points down when collapsed */
+  opacity: 0.5;
+  transition: transform 0.15s ease;
+  margin-right: 4px;
+}
+.settings-group[open] > summary::after { transform: rotate(-135deg); } /* points up when open */
+.settings-group .sg-body { padding: 2px 0 14px; }
+.settings-group .sg-body .setting:last-child { margin-bottom: 4px; }
 .setting.toggle {
   display: flex;
   align-items: center;
@@ -1255,6 +1343,14 @@ input[type="checkbox"] {
   font-weight: 700;
   margin: 0 0 8px;
 }
+.whatsnew {
+  border: 1px solid var(--chrome-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(127, 127, 127, 0.06);
+}
+.help-build { font-weight: 400; opacity: 0.55; font-size: 13px; }
+.help-latest { font-size: 14px; margin: 0 0 8px; line-height: 1.5; }
 .help-body ul { margin: 0; padding-left: 20px; }
 .help-body li { font-size: 14px; line-height: 1.65; margin-bottom: 7px; }
 .help-body li b { font-weight: 700; }

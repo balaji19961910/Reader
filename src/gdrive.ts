@@ -421,6 +421,41 @@ export const googleDrive: SyncProvider = {
     const fileId = await findFile(folderId, name);
     if (fileId) await authFetch(`${API}/files/${fileId}`, { method: "DELETE" });
   },
+
+  // Server-side move: only the file's parent changes, the bytes stay in place.
+  // No download/re-upload — instant regardless of file size.
+  async moveFile(fromFolder, name, toFolder): Promise<boolean> {
+    const fromId = await ensureFolder(fromFolder);
+    const fileId = await findFile(fromId, name);
+    if (!fileId) return false;
+    const toId = await ensureFolder(toFolder);
+    if (toId === fromId) return true;
+    await authFetch(
+      `${API}/files/${fileId}?addParents=${toId}&removeParents=${fromId}&fields=id`,
+      { method: "PATCH" },
+    );
+    clearFolderCache();
+    return true;
+  },
+
+  // Reparent a whole sub-folder (e.g. a book's audio folder) — also bytes-free.
+  async moveFolder(fromFolder, folderName, toFolder): Promise<boolean> {
+    const fromId = await ensureFolder(fromFolder);
+    const q = encodeURIComponent(
+      `mimeType='application/vnd.google-apps.folder' and name='${esc(folderName)}' and '${fromId}' in parents and trashed=false`,
+    );
+    const r = await authFetch(`${API}/files?q=${q}&fields=files(id)&spaces=drive`);
+    const id = (await r.json()).files?.[0]?.id;
+    if (!id) return false;
+    const toId = await ensureFolder(toFolder);
+    if (toId === fromId) return true;
+    await authFetch(
+      `${API}/files/${id}?addParents=${toId}&removeParents=${fromId}&fields=id`,
+      { method: "PATCH" },
+    );
+    clearFolderCache();
+    return true;
+  },
 };
 
 export function registerGoogleDrive(): void {

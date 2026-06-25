@@ -23,13 +23,20 @@ cd "$ROOT"
 DEFAULT_DEST="/Users/balaji-9678/Library/CloudStorage/GoogleDrive-balaji19961910@gmail.com/My Drive/ReaderApp"
 
 # --- parse args (flags + optional destination folder, any order) ---
+#   --minor / --major          bump y / major by hand (drastic changes)
+#   --set-version=X.Y.Z         pin an exact version
+# (otherwise the patch number auto-increments once per new commit)
 NO_BUILD=0
 OPEN=0
 DEST=""
+VERSION_FLAGS=()
 for a in "$@"; do
   case "$a" in
     --no-build) NO_BUILD=1 ;;
     -o|--open) OPEN=1 ;;
+    --minor) VERSION_FLAGS+=(--minor) ;;
+    --major) VERSION_FLAGS+=(--major) ;;
+    --set-version=*) VERSION_FLAGS+=(--set "${a#*=}") ;;
     http://*|https://*)
       echo "✗ That looks like a web link. Pass the LOCAL Drive folder path instead," >&2
       echo "  e.g. \"$DEFAULT_DEST\"" >&2
@@ -42,6 +49,12 @@ DEST="${DEST:-$DEFAULT_DEST}"
 
 APP="$ROOT/src-tauri/target/release/bundle/macos/Reader.app"
 APK_DIR="$ROOT/src-tauri/gen/android/app/build/outputs/apk/universal/release"
+
+# --- 0) version bump (patch auto-increments once per new commit) ---
+if [[ "$NO_BUILD" -eq 0 ]]; then
+  echo "▶ Versioning…"
+  node "$ROOT/release/version.mjs" ${VERSION_FLAGS[@]+"${VERSION_FLAGS[@]}"}
+fi
 
 # --- 1) build ---
 if [[ "$NO_BUILD" -eq 0 ]]; then

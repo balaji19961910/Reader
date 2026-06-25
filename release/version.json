@@ -1,0 +1,83 @@
+{
+  "version": "1.2.0",
+  "lastCommit": "f0b45030e240272c1bfb29765b47eab4bfa0a612",
+  "releases": [
+    {
+      "version": "1.2.0",
+      "commit": "f0b4503",
+      "date": "2026-06-24",
+      "notes": [
+        "Selective Google Drive sync — opt in per book; reading progress merges by furthest position",
+        "Server-side cloud moves: re-foldering a synced book no longer re-uploads it",
+        "Folder library with drag-and-drop and long-press move / copy",
+        "Settings reorganised into collapsible Display, Fonts and Margins groups",
+        "Text-to-speech and audiobook player with 0.25x–3x speed presets",
+        "Offline eviction: auto-remove unopened downloads, re-fetch from cloud on open"
+      ]
+    },
+    {
+      "version": "1.1.0",
+      "commit": "c0bd9fb",
+      "date": "2026-06-22",
+      "notes": [
+        "Reader enhancements: reading view, player and library refinements"
+      ]
+    },
+    {
+      "version": "1.0.6",
+      "commit": "9fff8aa",
+      "date": "2026-06-19",
+      "notes": [
+        "Fixes"
+      ]
+    },
+    {
+      "version": "1.0.5",
+      "commit": "0cd0340",
+      "date": "2026-06-19",
+      "notes": [
+        "Fixes"
+      ]
+    },
+    {
+      "version": "1.0.4",
+      "commit": "adfa957",
+      "date": "2026-06-19",
+      "notes": [
+        "Fixes"
+      ]
+    },
+    {
+      "version": "1.0.3",
+      "commit": "6f7634e",
+      "date": "2026-06-18",
+      "notes": [
+        "Layout / alignment fixes"
+      ]
+    },
+    {
+      "version": "1.0.2",
+      "commit": "1828dab",
+      "date": "2026-06-18",
+      "notes": [
+        "Android APK build fixes"
+      ]
+    },
+    {
+      "version": "1.0.1",
+      "commit": "767b319",
+      "date": "2026-06-18",
+      "notes": [
+        "Android signing keystore"
+      ]
+    },
+    {
+      "version": "1.0.0",
+      "commit": "e2c285e",
+      "date": "2026-06-18",
+      "notes": [
+        "Initial release"
+      ]
+    }
+  ]
+}

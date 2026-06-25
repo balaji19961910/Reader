@@ -1,6 +1,6 @@
 [package]
 name = "Reader"
-version = "0.1.0"
+version = "1.2.0"
 description = "Reader is a simple, lightweight, ePub and Mobi reader"
 authors = ["you"]
 edition = "2021"

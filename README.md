@@ -8,7 +8,7 @@ Built with **Tauri 2** (Rust shell) + **Vite** + **TypeScript**, using
 [foliate-js](https://github.com/johnfactotum/foliate-js) for book rendering and
 [CodeMirror 6](https://codemirror.net/) for the text/code viewer.
 
-App identifier: `com.balaji.reader`
+App identifier: `com.balaji.reader` · Current version: **1.2.0**
 
 ---
 
@@ -16,6 +16,22 @@ App identifier: `com.balaji.reader`
 
 Most readers either show ads, collect data, or only offer a paged view. This one is
 local-first, open, and supports **continuous scroll** as well as classic pagination.
+
+---
+
+## Changelog
+
+Versions follow `MAJOR.MINOR.PATCH` and are bumped automatically by
+[`release/release.sh`](release/release.sh) — see *Updating* below. Full history lives in
+[`release/version.json`](release/version.json) and shows on the in-app Help page.
+
+- **1.2.0** — Selective Google Drive sync (opt-in per book, furthest-progress merge);
+  server-side cloud moves (no re-upload when re-foldering); folder library with
+  drag-and-drop and long-press move/copy; settings split into collapsible Display, Fonts
+  and Margins groups; TTS + audiobook player with 0.25×–3× speed presets; offline eviction
+  of unopened downloads.
+- **1.1.0** — Reader enhancements: reading view, player and library refinements.
+- **1.0.0 – 1.0.6** — Initial release, Android signing/APK build, layout fixes.
 
 ---
 
@@ -316,10 +332,29 @@ Then rebuild the app(s) so the new icon is bundled.
 When you change anything (frontend, Rust, icon), you **rebuild and reinstall**. There's no
 magic — the binary has to be regenerated.
 
-1. **Bump the version** in [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json)
-   (`"version": "0.2.0"`). Android derives its `versionCode` from this; a device will only
-   accept an update if the version is higher.
-2. **Rebuild the target(s):**
+1. **Versioning is automatic.** `release/release.sh` runs [`release/version.mjs`](release/version.mjs)
+   before each build, which bumps the version and stamps it into `package.json`,
+   `tauri.conf.json`, `Cargo.toml` and `src/version.ts` (shown on the in-app Help page).
+
+   Scheme is `MAJOR.MINOR.PATCH`:
+   - **PATCH** auto-increments once per release **that sits on a new commit**. Running
+     `release.sh` twice on the *same* commit changes nothing — the version is keyed to the
+     commit it was cut from (tracked in [`release/version.json`](release/version.json) → `lastCommit`).
+   - **MINOR** — a feature drop. Bump by hand: `./release/release.sh --minor`.
+   - **MAJOR** — a drastic change. Bump by hand: `./release/release.sh --major`.
+   - Pin an exact version with `./release/release.sh --set-version=2.3.0`.
+
+   Release notes are harvested from `git log` since the last release, so write meaningful
+   commit subjects — they become the "What's new" list in Help. Android derives its
+   `versionCode` from the version; a device only accepts an update if the version is higher.
+2. **Build + distribute** with the release script (it versions, builds macOS + Android, and
+   copies the artifacts to your Drive folder):
+   ```bash
+   ./release/release.sh                  # patch bump (if on a new commit) + build + distribute
+   ./release/release.sh --minor          # feature release (1.4.x → 1.5.0)
+   ./release/release.sh --set-version=2.0.0
+   ```
+   …or build a single target manually (these do **not** auto-version):
    ```bash
    npm run tauri build                          # macOS  → Reader.app
    npm run tauri android build -- --apk         # Android → APK/AAB

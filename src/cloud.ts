@@ -122,6 +122,9 @@ export interface SyncProvider {
   downloadFile(folder: string, name: string): Promise<ArrayBuffer | null>;
   listFiles(folder: string): Promise<{ id: string; name: string }[]>;
   deleteFile(folder: string, name: string): Promise<void>;
+  // Server-side reparent (no re-upload). Return false if the file/folder wasn't found.
+  moveFile(fromFolder: string, name: string, toFolder: string): Promise<boolean>;
+  moveFolder(fromFolder: string, folderName: string, toFolder: string): Promise<boolean>;
 }
 
 // Per-book opt-in: which books this device puts in the shared cloud library.
@@ -291,15 +294,27 @@ export async function syncLibrary(
       report(`${existing ? "Moving" : "Uploading"} “${b.title}”…`, (done / total) * 100);
       onStep?.(`${existing ? "Moving" : "Uploading"} “${b.title}”…`);
 
-      // if it moved, delete the old copy first
+      const dir = bookDir(s.folder, folder);
+
+      // Already in the cloud, just in another folder → reparent server-side.
+      // Drive moves only the file's `parents`, so the bytes never leave the
+      // cloud — instant even for huge books/audio, no re-upload, no delete.
       if (existing) {
         const oldDir = bookDir(s.folder, existing.folder || "");
-        await p.deleteFile(oldDir, existing.storedName);
-        if (existing.audioDir && existing.audio)
-          for (const n of existing.audio) await p.deleteFile(`${oldDir}/${existing.audioDir}`, n);
+        const moved = await p.moveFile(oldDir, existing.storedName, dir);
+        if (existing.audioDir)
+          await p.moveFolder(oldDir, existing.audioDir, dir);
+        if (moved) {
+          existing.folder = folder;
+          catalog.books[b.id] = existing;
+          uploaded++;
+          syncItems[done].status = "done";
+          done++;
+          continue;
+        }
+        // file vanished from the cloud — fall through and re-upload it
       }
 
-      const dir = bookDir(s.folder, folder);
       let storedName = existing?.storedName || b.fileName;
       if (!existing) {
         const clash = Object.values(catalog.books).some(
